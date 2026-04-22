@@ -54,7 +54,7 @@ describe('api client', () => {
     );
     global.fetch = spy as typeof fetch;
     await api.startGame({ category: 'animals', difficulty: 'easy' });
-    const [url, init] = spy.mock.calls[0];
+    const [url, init] = spy.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe('/api/v1/games');
     expect(init?.method).toBe('POST');
     expect(init?.credentials).toBe('include');
