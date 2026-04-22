@@ -1,11 +1,16 @@
 #!/bin/bash
 # .claude/hooks/check-workflow-gates.sh
-# PreToolUse hook for Bash: blocks commit/push/PR if quality gates aren't complete.
+# PreToolUse hook for Bash: blocks push/PR if quality gates aren't complete.
 #
 # Fires BEFORE Bash commands. Only activates when:
 # 1. An active workflow exists in CONTINUITY.md (Command != none)
-# 2. The command is git commit, git push, or gh pr create
+# 2. The command is git push or gh pr create — NOT git commit
 # 3. Always-required quality gate checklist items aren't checked off
+#
+# Why `git commit` is NOT gated: commits are local, reversible, and happen
+# throughout development (TDD, subagent-driven-development, incremental work).
+# True ship actions are `git push` (publishes to remote) and `gh pr create`
+# (requests integration). Gating commits blocks legitimate Phase-4 workflows.
 #
 # Gated markers (canonical vocabulary — see rules/testing.md "Canonical E2E gate vocabulary"):
 #   "Code review loop"  — code review must pass
@@ -35,8 +40,10 @@ fi
 [ -z "$COMMAND" ] && exit 0
 
 # --- Only gate ship actions ---
+# Ship = making the work visible outside the local repo. `git commit` is local
+# (reversible, no external effect); `git push` and `gh pr create` are the
+# real boundaries.
 IS_SHIP=false
-echo "$COMMAND" | grep -qE '^\s*git\s+commit\b' && IS_SHIP=true
 echo "$COMMAND" | grep -qE '^\s*git\s+push\b' && IS_SHIP=true
 echo "$COMMAND" | grep -qE '^\s*gh\s+pr\s+create\b' && IS_SHIP=true
 
