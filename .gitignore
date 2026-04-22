@@ -1,0 +1,27 @@
+.worktrees/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+dist/
+*.log
+.vite/
+
+# Playwright
+playwright-report/
+test-results/
+blob-report/
+playwright/.cache/
+
+# App
+backend/hangman.db
+.env
+.env.*
+!.env.example
