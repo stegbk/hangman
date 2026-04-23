@@ -2,7 +2,7 @@ module.exports = {
   default: {
     paths: ["tests/bdd/features/**/*.feature"],
     import: ["tsx/esm"],
-    require: ["tests/bdd/steps/**/*.ts", "tests/bdd/support/**/*.ts"],
+    require: ["tests/bdd/support/**/*.ts", "tests/bdd/steps/**/*.ts"],
     format: [
       "progress-bar",
       "json:test-results/cucumber.json",
