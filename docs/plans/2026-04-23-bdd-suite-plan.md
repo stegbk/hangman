@@ -48,7 +48,7 @@ frontend/
     │   └── difficulty-levels.feature
     ├── steps/
     │   ├── api.ts                           # 14 API step registrations (incl. cookie helpers)
-    │   ├── ui.ts                            # 15 UI step registrations
+    │   ├── ui.ts                            # 14 UI step registrations
     │   └── shared.ts                        # 1 no-op Given + 4 dialog Before hooks (accept/reject/tracked/mutex-guard) + 2 dialog Then steps
     └── support/
         ├── world.ts                         # HangmanWorld custom World class
@@ -1051,9 +1051,10 @@ Expected: no errors. (We intentionally import `expect` from `@playwright/test` �
 git add frontend/tests/bdd/steps/api.ts
 git commit -m "feat(bdd): API step definitions
 
-12 step registrations covering every API surface referenced by the 33
+14 step registrations covering every API surface referenced by the 33
 scenarios: start game, guess letter, generic GET/POST, cross-session GET,
-body dot-path assertions, array length, field absence, Set-Cookie header.
+body dot-path assertions, array length, field absence, case-insensitive
+Set-Cookie header matcher, plus session-cookie remember/unchanged helpers.
 Default HTTP client is page.request (cookie-shared); apiRequest used only
 for 'fresh session' variants."
 ```
@@ -1159,12 +1160,6 @@ Then(
     await expect(this.page.getByTestId("streak-current")).toHaveText(expected);
   },
 );
-
-Then("I see a terminal game banner", async function (this: HangmanWorld) {
-  const won = this.page.getByTestId("game-won");
-  const lost = this.page.getByTestId("game-lost");
-  await expect(won.or(lost)).toBeVisible();
-});
 
 Then(
   "I see the game-{word} banner",
