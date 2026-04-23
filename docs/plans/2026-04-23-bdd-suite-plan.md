@@ -450,10 +450,10 @@ make -n backend-test
 make -n bdd
 ```
 
-Expected output for `backend-test`:
+Expected output for `backend-test` (line-continuations normalized — shape matters, not whitespace):
 
 ```
-cd backend && HANGMAN_WORDS_FILE=words.test.txt uv run uvicorn hangman.main:app --reload --host 127.0.0.1 --port 8000
+cd backend && HANGMAN_WORDS_FILE=words.test.txt HANGMAN_DB_URL=sqlite:///<repo-root>/backend/hangman.test.db uv run uvicorn hangman.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
 Expected output for `bdd`:
@@ -591,9 +591,10 @@ HANGMAN_{BACKEND,FRONTEND}_PORT env vars for URL composition."
  *   - Shared browser (BeforeAll/AfterAll)            — fast
  *   - Per-scenario context+page (Before/After)       — isolates cookies
  *
- * Before each scenario we also ping /api/v1/categories to surface "did you
- * run `make backend-test`?" early rather than let a cryptic ECONNREFUSED
- * surface mid-step.
+ * BeforeAll pings both servers once so the suite fails fast with a clear
+ * "did you run make backend-test / make frontend?" message instead of a
+ * cryptic ECONNREFUSED deep inside a scenario. Once per run is enough —
+ * the servers don't come and go mid-suite.
  */
 import { BeforeAll, Before, After, AfterAll, Status } from "@cucumber/cucumber";
 import { chromium, request, type Browser } from "playwright";
@@ -601,22 +602,51 @@ import type { HangmanWorld } from "./world";
 
 let sharedBrowser: Browser;
 
-async function assertBackendReachable(backendUrl: string): Promise<void> {
+function backendUrl(): string {
+  return `http://localhost:${process.env.HANGMAN_BACKEND_PORT ?? "8000"}`;
+}
+
+function frontendUrl(): string {
+  return `http://localhost:${process.env.HANGMAN_FRONTEND_PORT ?? "3000"}`;
+}
+
+async function assertReachable(
+  label: "backend" | "frontend",
+  url: string,
+  makeTarget: "make backend-test" | "make frontend",
+  portEnvName: "HANGMAN_BACKEND_PORT" | "HANGMAN_FRONTEND_PORT",
+): Promise<void> {
   try {
-    const res = await fetch(`${backendUrl}/api/v1/categories`);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const res = await fetch(url);
+    // The frontend root may return 404 for some SPA configurations but the
+    // TCP connect and HTTP response are both fine — that's reachable enough
+    // for our purposes. We only fail on thrown errors (ECONNREFUSED etc).
+    void res;
   } catch (err) {
-    const portHint = process.env.HANGMAN_BACKEND_PORT
-      ? ` (HANGMAN_BACKEND_PORT=${process.env.HANGMAN_BACKEND_PORT})`
+    const portHint = process.env[portEnvName]
+      ? ` (${portEnvName}=${process.env[portEnvName]})`
       : "";
     throw new Error(
-      `Backend not reachable at ${backendUrl}/api/v1/categories — did you run ` +
-        `\`make backend-test\`${portHint}? Underlying error: ${(err as Error).message}`,
+      `${label[0].toUpperCase() + label.slice(1)} not reachable at ${url} — did you run ` +
+        `\`${makeTarget}\`${portHint}? Underlying error: ${(err as Error).message}`,
     );
   }
 }
 
 BeforeAll(async function () {
+  // Fail-fast BEFORE launching chromium; cheaper for CI if servers are down.
+  await assertReachable(
+    "backend",
+    `${backendUrl()}/api/v1/categories`,
+    "make backend-test",
+    "HANGMAN_BACKEND_PORT",
+  );
+  await assertReachable(
+    "frontend",
+    frontendUrl(),
+    "make frontend",
+    "HANGMAN_FRONTEND_PORT",
+  );
   sharedBrowser = await chromium.launch();
 });
 
@@ -625,7 +655,6 @@ AfterAll(async function () {
 });
 
 Before(async function (this: HangmanWorld) {
-  await assertBackendReachable(this.backendUrl);
   this.browser = sharedBrowser;
   this.context = await sharedBrowser.newContext();
   this.page = await this.context.newPage();
@@ -711,6 +740,20 @@ import type { HangmanWorld } from "../support/world";
 Given("the backend and frontend are running", function (this: HangmanWorld) {
   // intentionally empty
 });
+
+// Mutex guard: cucumber runs every matching Before hook, so a scenario
+// accidentally tagged with two @dialog-* tags would register two listeners
+// and behave unpredictably. Fail the scenario loudly instead.
+Before(
+  {
+    tags: "(@dialog-accept and @dialog-reject) or (@dialog-accept and @dialog-tracked) or (@dialog-reject and @dialog-tracked)",
+  },
+  function () {
+    throw new Error(
+      "Scenario has multiple @dialog-* tags. Pick exactly one of @dialog-accept, @dialog-reject, @dialog-tracked.",
+    );
+  },
+);
 
 Before({ tags: "@dialog-accept" }, async function (this: HangmanWorld) {
   this.page.on("dialog", async (dialog) => {
@@ -946,12 +989,48 @@ Then(
 );
 
 Then(
-  "the Set-Cookie header contains {string}",
+  "the Set-Cookie header contains (case-insensitive) {string}",
   function (this: HangmanWorld, needle: string) {
     if (!this.lastApiResponse) throw new Error("No API response recorded");
     const headers = this.lastApiResponse.headers();
-    const cookie = headers["set-cookie"] ?? "";
-    expect(cookie).toContain(needle);
+    const cookie = (headers["set-cookie"] ?? "").toLowerCase();
+    expect(cookie).toContain(needle.toLowerCase());
+  },
+);
+
+// Session idempotence steps — let a scenario snapshot the cookie value,
+// do other API calls, and assert the value is unchanged. Used by
+// session.feature. Cookie name is "session_id" (verified against
+// backend/src/hangman/sessions.py:12 COOKIE_NAME on 2026-04-23).
+When(
+  "I remember the session cookie value",
+  async function (this: HangmanWorld) {
+    const cookies = await this.context.cookies(this.backendUrl);
+    const sess = cookies.find((c) => c.name === "session_id");
+    if (!sess) {
+      throw new Error(
+        "No session_id cookie set yet — call /api/v1/session first.",
+      );
+    }
+    (
+      this as unknown as { rememberedSessionValue: string }
+    ).rememberedSessionValue = sess.value;
+  },
+);
+
+Then(
+  "the remembered session cookie value is unchanged",
+  async function (this: HangmanWorld) {
+    const remembered = (this as unknown as { rememberedSessionValue?: string })
+      .rememberedSessionValue;
+    if (!remembered) {
+      throw new Error(
+        "Nothing remembered — run 'I remember the session cookie value' first.",
+      );
+    }
+    const cookies = await this.context.cookies(this.backendUrl);
+    const sess = cookies.find((c) => c.name === "session_id");
+    expect(sess?.value).toBe(remembered);
   },
 );
 ```
@@ -1115,6 +1194,15 @@ Then(
     ).toBeDisabled();
   },
 );
+
+Then(
+  "the keyboard letter {string} is enabled",
+  async function (this: HangmanWorld, letter: string) {
+    await expect(
+      this.page.getByTestId(`keyboard-letter-${letter}`),
+    ).toBeEnabled();
+  },
+);
 ```
 
 - [ ] **Step 2: Typecheck**
@@ -1270,7 +1358,8 @@ Feature: GET /api/v1/session
 
   @happy
   Scenario: Subsequent same-session calls reuse the cookie value
-    When I remember the session cookie value
+    When I request "/api/v1/session"
+    And I remember the session cookie value
     When I request "/api/v1/session"
     Then the response status is 200
     And the remembered session cookie value is unchanged
@@ -1282,51 +1371,7 @@ Feature: GET /api/v1/session
     And the Set-Cookie header contains (case-insensitive) "max-age=2592000"
 ```
 
-**Step-def additions needed (fold into Task 7 `api.ts`):**
-
-Add a case-insensitive Set-Cookie matcher + two helpers for the idempotence scenario. Update Task 7 Step 1's `api.ts` content to include:
-
-```ts
-Then(
-  "the Set-Cookie header contains (case-insensitive) {string}",
-  function (this: HangmanWorld, needle: string) {
-    if (!this.lastApiResponse) throw new Error("No API response recorded");
-    const headers = this.lastApiResponse.headers();
-    const cookie = (headers["set-cookie"] ?? "").toLowerCase();
-    expect(cookie).toContain(needle.toLowerCase());
-  },
-);
-
-When(
-  "I remember the session cookie value",
-  async function (this: HangmanWorld) {
-    const cookies = await this.context.cookies(this.backendUrl);
-    const sess = cookies.find((c) => c.name === "session_id");
-    if (!sess)
-      throw new Error("No session_id cookie set yet — call /session first");
-    (
-      this as unknown as { rememberedSessionValue: string }
-    ).rememberedSessionValue = sess.value;
-  },
-);
-
-Then(
-  "the remembered session cookie value is unchanged",
-  async function (this: HangmanWorld) {
-    const remembered = (this as unknown as { rememberedSessionValue?: string })
-      .rememberedSessionValue;
-    if (!remembered)
-      throw new Error(
-        "Nothing remembered — run 'I remember the session cookie value' first",
-      );
-    const cookies = await this.context.cookies(this.backendUrl);
-    const sess = cookies.find((c) => c.name === "session_id");
-    expect(sess?.value).toBe(remembered);
-  },
-);
-```
-
-**Cookie name:** `session_id` (verified 2026-04-23 against `backend/src/hangman/sessions.py:12 COOKIE_NAME`). If this constant is ever renamed, the `.find()` call will return `undefined` and the step throws with a clear message — a fail-loud mismatch.
+**Step references:** The case-insensitive `Set-Cookie` matcher and the `remember`/`remembered-unchanged` steps live in Task 7's `api.ts` (see Task 7 Step 1 above). Cookie name is `session_id` (verified 2026-04-23 against `backend/src/hangman/sessions.py:12 COOKIE_NAME`).
 
 - [ ] **Step 2: Run the feature**
 
@@ -1805,7 +1850,7 @@ Feature: UC3 + UC3b — Forfeit an in-progress game, but not a terminal one
     Then a dialog has fired
     # Fresh game rehydrated: masked word is back to three underscores and
     # 'c' is no longer marked as already-guessed on the keyboard.
-    And the masked word shows "___"
+    And the masked word shows "_ _ _"
     And the keyboard letter "c" is enabled
 
   @happy @smoke @dialog-tracked
@@ -1824,23 +1869,10 @@ Feature: UC3 + UC3b — Forfeit an in-progress game, but not a terminal one
     # No forfeit confirm because the prior game was already LOST (terminal).
     Then no dialog has fired
     # Fresh game rehydrated: banner is gone, masked_word reset.
-    And the masked word shows "___"
+    And the masked word shows "_ _ _"
 ```
 
-**Step-def addition needed (fold into Task 8 `ui.ts`):**
-
-The second forfeit scenario asserts a letter button is _enabled_ (not disabled) after the new game starts. Add this step to `ui.ts`:
-
-```ts
-Then(
-  "the keyboard letter {string} is enabled",
-  async function (this: HangmanWorld, letter: string) {
-    await expect(
-      this.page.getByTestId(`keyboard-letter-${letter}`),
-    ).toBeEnabled();
-  },
-);
-```
+**Step reference:** The `Then the keyboard letter {string} is enabled` step is registered in Task 8's `ui.ts` (see Task 8 Step 1 above).
 
 - [ ] **Step 2: Run**
 
@@ -1884,11 +1916,14 @@ Feature: UC4 — Mid-game reload restores the in-progress game
     And I click the keyboard letter "c"
     And I reload the page
     Then I see the score panel
-    And the masked word shows "c__"
+    And the masked word shows "c _ _"
     And the keyboard letter "c" is disabled
 ```
 
-**Masked-word format:** `backend/src/hangman/words.py::mask_word` returns the word with unrevealed positions as ASCII underscores and no inter-character spacing (the `0.5em` letter-spacing in `GameBoard.tsx` is CSS-only, not textual). For the word "cat" with only `c` guessed: `"c__"`. All feature files use this format consistently.
+**Masked-word format — API vs UI:** The backend (`backend/src/hangman/game.py::mask_word`) returns the word with unrevealed positions as ASCII underscores and no inter-character spacing: for "cat" with only `c` guessed, the API string is `"c__"`. The frontend component (`frontend/src/components/GameBoard.tsx:32`) renders it as `{game.masked_word.split('').join(' ')}`, which INSERTS a literal space between every character. So the visible DOM text is `"c _ _"` (spaced). Feature files use:
+
+- **API-level assertions** (response body): no spaces — `"c__"` / `"___"` (see Task 13 `guesses.feature`).
+- **UI-level assertions** (`Then the masked word shows ...`): spaced — `"c _ _"` / `"_ _ _"` (see Tasks 17, 18, and forfeit scenarios).
 
 - [ ] **Step 2: Run**
 
