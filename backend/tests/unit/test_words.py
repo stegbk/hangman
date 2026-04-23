@@ -117,3 +117,127 @@ def test_load_real_words_txt_has_three_categories() -> None:
     assert set(pool.category_names()) == {"animals", "food", "tech"}
     for cat in pool.category_names():
         assert len(pool.categories[cat]) >= 15
+
+
+# --- Exhaustive invalid-word table ---
+# load_words validates raw (pre-lowercase) words. Any non-a-z character
+# should be rejected with a line number. Covers uppercase, digits,
+# punctuation, whitespace, control chars, unicode.
+
+
+@pytest.mark.parametrize(
+    "bad_word",
+    [
+        # uppercase (any position)
+        "Cat",
+        "cAt",
+        "caT",
+        "CAT",
+        # digits
+        "cat1",
+        "1cat",
+        "c4t",
+        # punctuation
+        "cat!",
+        "ca.t",
+        "ca-t",
+        "ca_t",
+        "ca't",
+        'ca"t',
+        "ca,t",
+        "ca;t",
+        "ca:t",
+        "ca?t",
+        "ca*t",
+        "ca/t",
+        "ca\\t",
+        # whitespace embedded (not just trimmed)
+        "ca t",
+        "ca\tt",
+        # unicode letters / diacritics
+        "café",
+        "naïve",
+        "Ωmega",
+        # unicode punctuation
+        "ca—t",  # em-dash
+        "ca​t",  # zero-width space
+        # emoji
+        "ca🎯t",
+        # control characters
+        "ca\x00t",  # null byte
+        "ca\x1bt",  # escape
+        "ca\rt",  # carriage return (inside word)
+        # SQL-injection-ish
+        "cat'",
+        'ca"; DROP',
+    ],
+)
+def test_load_words_rejects_any_non_az_character(tmp_path: Path, bad_word: str) -> None:
+    """Every invalid character class must be rejected at load time with a line number."""
+    p = _write(tmp_path, f"animals,{bad_word}\n")
+    with pytest.raises(ValueError, match="line 1"):
+        load_words(p)
+
+
+@pytest.mark.parametrize(
+    "bad_word",
+    [
+        "",  # empty after strip
+        " ",  # whitespace-only → empty after strip
+        "\t",  # tab-only
+        "ab",  # too short (< 3)
+        "a",  # single char
+    ],
+)
+def test_load_words_rejects_too_short_or_empty(tmp_path: Path, bad_word: str) -> None:
+    """Empty / whitespace-only / too-short entries raise ValueError at line N."""
+    p = _write(tmp_path, f"animals,{bad_word}\n")
+    with pytest.raises(ValueError, match="line 1"):
+        load_words(p)
+
+
+def test_load_words_rejects_multiple_commas(tmp_path: Path) -> None:
+    """A line like 'animals,cat,dog' splits on first comma — the rest is taken as the word.
+
+    With the default max-split of 1, `line.split(",", 1)` produces
+    category='animals', word='cat,dog' → word contains ',' → validator rejects.
+    """
+    p = _write(tmp_path, "animals,cat,dog\n")
+    with pytest.raises(ValueError, match="line 1"):
+        load_words(p)
+
+
+def test_load_words_reports_first_bad_line_number(tmp_path: Path) -> None:
+    """Bad line on line 4 surfaces 'line 4' in the error, not line 1."""
+    p = _write(
+        tmp_path,
+        "animals,cat\nanimals,dog\nanimals,bird\nanimals,Cat\n",  # line 4 — uppercase
+    )
+    with pytest.raises(ValueError, match="line 4"):
+        load_words(p)
+
+
+def test_load_words_category_name_lowercased_consistently(tmp_path: Path) -> None:
+    """Categories ARE lowercased (unlike words). 'ANIMALS' → 'animals' pool key.
+
+    This is intentional: case-insensitive category lookup at the API layer
+    (see GameCreate.category field_validator) needs a canonical form.
+    Unicode category names should NOT get special handling — keep it ASCII."""
+    p = _write(tmp_path, "ANIMALS,cat\nfood,pizza\n")
+    pool = load_words(p)
+    assert set(pool.category_names()) == {"animals", "food"}
+
+
+def test_load_words_blank_lines_between_data_ok(tmp_path: Path) -> None:
+    """Mixed blank lines / comments / data — line counting still accurate on error."""
+    p = _write(
+        tmp_path,
+        "# comment\n"
+        "\n"
+        "animals,cat\n"
+        "\n"
+        "# another comment\n"
+        "animals,BadWord\n",  # line 6 — has uppercase
+    )
+    with pytest.raises(ValueError, match="line 6"):
+        load_words(p)

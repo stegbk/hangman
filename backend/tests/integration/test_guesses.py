@@ -139,3 +139,83 @@ def test_guess_on_finished_game_409(client) -> None:
     res = _guess(client, game["id"], "z")  # 'z' was not previously guessed
     assert res.status_code == 409
     assert res.json()["error"]["code"] == "GAME_ALREADY_FINISHED"
+
+
+# --- Edge cases for the guess endpoint ---
+# Cover PRD non-letter validation + a defense-in-depth sampling of
+# malicious / malformed inputs. Phase 5.1 P1-3 fix moved letter validation
+# from Pydantic to `apply_guess` in game.py; these tests lock that boundary.
+
+import pytest  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    "bad_letter",
+    [
+        "",  # empty string
+        "aa",  # two letters
+        "abcdefghijklmnopqrstuvwxyz",  # 26 letters at once
+        "a" * 10_000,  # very long payload
+        "1",  # single digit
+        "9",  # different digit
+        "!",  # punctuation
+        ".",  # dot
+        "-",  # hyphen
+        "_",  # underscore
+        " ",  # whitespace
+        "\t",  # tab
+        "\n",  # newline
+        "\r\n",  # CRLF
+        "\x00",  # null byte
+        "\x1b",  # ESC control char
+        "é",  # unicode (diacritic)
+        "Ω",  # unicode (Greek)
+        "🎯",  # emoji
+        "café",  # unicode letters + accent
+        "á",  # 'a' + combining accent (looks like 'á' but len 2)
+        "' OR 1=1--",  # SQL-injection-ish
+        "<script>",  # HTML/XSS-ish
+        "../../etc/passwd",  # path traversal
+        "a;DROP TABLE games;--",  # another SQL injection shape
+        "\\",  # backslash
+        '"',  # quote
+    ],
+)
+def test_guess_invalid_letter_returns_422_invalid_letter(client, bad_letter: str) -> None:
+    """Every malformed letter must surface as 422 INVALID_LETTER (never 500).
+
+    Verifies that apply_guess._normalize_letter rejects all non-single-a-z
+    inputs cleanly, that routes.py maps InvalidLetter → 422 INVALID_LETTER,
+    and that nothing leaks through as an unhandled exception.
+    """
+    game = _start_game(client)
+    res = _guess(client, game["id"], bad_letter)
+    assert res.status_code == 422, f"expected 422 for {bad_letter!r}, got {res.status_code}"
+    body = res.json()
+    assert body["error"]["code"] == "INVALID_LETTER", (
+        f"expected INVALID_LETTER for {bad_letter!r}, got {body['error']['code']}"
+    )
+
+
+def test_guess_request_with_non_string_letter_returns_422(client) -> None:
+    """Non-string letter (number/null/array/object) must surface as 422 (Pydantic VALIDATION_ERROR)."""
+    game = _start_game(client)
+    for bad in [None, 1, ["a"], {"a": 1}, True]:
+        res = client.post(
+            f"/api/v1/games/{game['id']}/guesses",
+            json={"letter": bad},
+        )
+        assert res.status_code == 422, f"expected 422 for {bad!r}"
+        # At the Pydantic layer (type mismatch), not the game layer.
+        assert res.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+def test_guess_extra_json_fields_are_ignored(client) -> None:
+    """Extra unexpected JSON fields must not break parsing or leak through."""
+    game = _start_game(client)
+    res = client.post(
+        f"/api/v1/games/{game['id']}/guesses",
+        json={"letter": "a", "admin": True, "_extra": "ignore me", "game_id": 9999},
+    )
+    # Pydantic by default ignores extras; the guess should succeed.
+    assert res.status_code == 200, res.json()
