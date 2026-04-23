@@ -6,7 +6,30 @@ All notable changes to Hangman will be documented in this file.
 
 ### Added
 
-- **2026-04-23 — bdd-suite feature, Phases 1–3 complete (Phase 4 execution pending):**
+- **2026-04-23 — bdd-suite feature, Phase 4 execution COMPLETE (Phase 5 review loop pending):**
+  - All 23 plan tasks shipped via `superpowers:subagent-driven-development` — each task dispatched a fresh implementer subagent followed by spec-compliance + code-quality review subagents. Two latent bugs surfaced and fixed in-flight (cucumber-expressions escape + cucumber-js require-order hook bug). Every task passed both reviews.
+  - **Backend:** `HANGMAN_WORDS_FILE` env var + `backend/words.test.txt` ship the BDD test-mode word pool (one-word `"cat"` per production category for difficulty-invariant WIN / deterministic Easy-8/Medium-6/Hard-4 LOSS). 4 new pytest tests; suite at 191 green.
+  - **Frontend infrastructure:** `@cucumber/cucumber@12.8.1` + `playwright@1.59` (lockstepped with `@playwright/test`) + `tsx@~4.19`. Config at `frontend/cucumber.cjs` with dual `json`+`message` (NDJSON) reporters, strict mode, serial. Engines pin `"^20.19.0 || ^22.12.0 || >=24"` (intersection of cucumber-js 12 + vite 8 requirements).
+  - **Step-def + hook infrastructure** at `frontend/tests/bdd/{support,steps}/`:
+    - `HangmanWorld` custom World class — per-scenario `lastApiResponse`, `lastApiBody`, `dialogCount`; backend/frontend URL getters.
+    - `hooks.ts` — BeforeAll launches chromium + probes both servers (clear "did you run make backend-test / make frontend?" on ECONNREFUSED); AfterAll closes browser. Per-scenario fresh context+page+apiRequest for cookie isolation. Failure screenshots auto-attach to NDJSON stream.
+    - `shared.ts` — 4 Before dialog hooks (`@dialog-accept` / `@dialog-reject` / `@dialog-tracked` + mutex guard that throws on multi-tag). 2 Then steps (`no/a dialog has fired`).
+    - `api.ts` — 14 step registrations: start game, guess letter, GET/POST (+fresh-session variant), response assertions (status/error-code/body-path/array-length/field-absent/case-insensitive Set-Cookie), cookie snapshot/unchanged helpers.
+    - `ui.ts` — 14 step registrations against stable `data-testid` selectors. Keyboard-letter step uses `page.waitForResponse(/guesses/)` as real response-based sync barrier (replaces the earlier naïve disabled-poll that raced the in-flight POST).
+  - **Makefile:** `make backend-test` (HANGMAN_WORDS_FILE + isolated `hangman.test.db`) and `make bdd` (port env-var pass-through for SSH-tunnel users).
+  - **11 feature files / 33 scenarios** in `frontend/tests/bdd/features/`:
+    - `categories.feature` (3), `session.feature` (3 — incl. case-insensitive cookie attr assertions + cookie-snapshot idempotence), `games.feature` (4 — incl. forfeit-chain edge), `games-current.feature` (3 — incl. cross-session isolation via fresh-session client), `guesses.feature` (5 — correct/incorrect + 3 error codes: ALREADY_GUESSED 422, GAME_ALREADY_FINISHED 409, INVALID_LETTER 422), `history.feature` (4 — ordering, empty, pagination).
+    - UI UCs: `play-round.feature` (UC1, @smoke), `loss-resets-streak.feature` (UC2), `forfeit.feature` (UC3 + UC3b — validates the Phase-5.1 scaffold forfeit-confirm bug fix via @dialog-accept / @dialog-tracked), `mid-game-reload.feature` (UC4), `difficulty-levels.feature` (6 — Easy/Medium/Hard × WIN/LOSS).
+  - **Acceptance:** `make bdd` 33/33 green in 7.2s · `pnpm bdd --tags @smoke` 10/10 green · reports written to `frontend/test-results/cucumber.{json,ndjson}` · `make verify` clean (191 backend pytest + 28 frontend vitest + ruff + eslint + tsc).
+  - **Bugs fixed in-flight:**
+    - Task 10: Cucumber Expressions treats `(...)` as an optional group, breaking the `Set-Cookie header contains (case-insensitive) {string}` step. Fixed by escaping the opening paren in the step name (`\(case-insensitive)`) while feature files keep literal parens.
+    - Task 17: cucumber-js loads `require:` glob entries in order and registers Before hooks in that order. Original `cucumber.cjs` had `steps/**/*.ts` before `support/**/*.ts`, so shared.ts `@dialog-*` hooks fired before hooks.ts Before created `this.page` → `TypeError` on first `@dialog-*` scenario (forfeit.feature). Fixed by flipping the glob order.
+    - Task 23 lint: `_dialog` unused-param under `@typescript-eslint/no-unused-vars` — reduced callback arity to zero-arg (Playwright accepts shorter signatures).
+  - **Docs:** `.claude/rules/testing.md` grew a "BDD suite passed" vocabulary block alongside the "E2E verified" table (documentation-only in Feature 1; hook enforcement deferred to Feature 2). `README.md` gained a "Running the BDD suite" section explaining `make backend-test` vs `make backend`.
+  - **Deletions:** `frontend/tests/e2e/specs/play-round.spec.ts` and `no-forfeit-terminal.spec.ts` replaced by their `.feature` equivalents; `playwright.config.ts` + `tests/e2e/{use-cases,fixtures}/` preserved for verify-e2e agent regression + Feature 3 reuse.
+  - Commit arc on `feat/bdd-suite`: from `b9faad1` (Task 1) through `5d5c0c8` (final lint + CONTINUITY advance) — 23 task commits + 1 final fix.
+
+- **2026-04-23 — bdd-suite feature, Phases 1–3:**
   - PRD `docs/prds/bdd-suite.md` v1.2 (5 user stories, 13 non-goals, test-mode `HANGMAN_WORDS_FILE` constraint).
   - PRD discussion `docs/prds/bdd-suite-discussion.md` (10 Q&A resolved).
   - Research brief `docs/research/2026-04-23-bdd-suite.md` (10 library sections; 3 load-bearing findings: `tsx` not `ts-node`, dual json+ndjson formatters, Node ≥20 engines pin for cucumber-js 12).
