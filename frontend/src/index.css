@@ -1,0 +1,127 @@
+:root {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  line-height: 1.5;
+  color-scheme: light dark;
+  color: #222;
+  background-color: #f7f7f7;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body,
+#root {
+  margin: 0;
+  min-height: 100vh;
+}
+
+.app {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 2rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+[data-testid="error-banner"] {
+  background: #ffdddd;
+  border: 1px solid #c33;
+  padding: 0.5rem 1rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+[data-testid="score-panel"] {
+  display: flex;
+  gap: 1.5rem;
+  padding: 1rem;
+  background: #fff;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+}
+
+[data-testid="score-panel"] > div {
+  display: flex;
+  flex-direction: column;
+}
+
+[data-testid='score-panel'] dt {
+  font-size: 0.8rem;
+  color: #666;
+  margin: 0;
+}
+
+[data-testid='score-panel'] dd {
+  font-size: 1.4rem;
+  margin: 0;
+  font-weight: 600;
+}
+
+[data-testid="category-picker"] {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 1rem;
+  background: #fff;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+}
+
+[data-testid="game-board"],
+[data-testid="game-board-empty"] {
+  padding: 1rem;
+  background: #fff;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  text-align: center;
+}
+
+[data-testid="keyboard"] {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  justify-content: center;
+}
+
+[data-testid="keyboard"] button {
+  min-width: 2.5rem;
+  padding: 0.5rem;
+  font-family: inherit;
+  font-size: 1rem;
+  cursor: pointer;
+}
+
+[data-testid="keyboard"] button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+[data-testid="history-list"] {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+[data-testid="history-list"] li {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 0.5rem;
+  padding: 0.5rem;
+  background: #fff;
+  border: 1px solid #eee;
+  border-radius: 4px;
+  font-size: 0.9rem;
+}
+
+pre[data-testid="hangman-figure"] {
+  font-family: ui-monospace, monospace;
+  font-size: 1rem;
+  line-height: 1.1;
+  margin: 0.5rem 0;
+}

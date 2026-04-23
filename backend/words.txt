@@ -1,0 +1,54 @@
+# Hangman seed word list.
+# Format: category,word — lowercase a-z only, length >= 3.
+# Lines starting with # are comments. Blank lines ignored.
+
+# Animals (15)
+animals,cat
+animals,dog
+animals,elephant
+animals,giraffe
+animals,octopus
+animals,penguin
+animals,dolphin
+animals,kangaroo
+animals,rabbit
+animals,squirrel
+animals,butterfly
+animals,hippopotamus
+animals,crocodile
+animals,chameleon
+animals,flamingo
+
+# Food (15)
+food,pizza
+food,burger
+food,pasta
+food,sushi
+food,taco
+food,sandwich
+food,chocolate
+food,pineapple
+food,broccoli
+food,spaghetti
+food,pancake
+food,avocado
+food,strawberry
+food,cheeseburger
+food,quesadilla
+
+# Tech (15)
+tech,computer
+tech,keyboard
+tech,router
+tech,server
+tech,database
+tech,algorithm
+tech,python
+tech,javascript
+tech,terminal
+tech,compiler
+tech,encryption
+tech,kubernetes
+tech,microservice
+tech,regression
+tech,bandwidth
