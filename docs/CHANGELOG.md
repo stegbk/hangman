@@ -6,6 +6,14 @@ All notable changes to Hangman will be documented in this file.
 
 ### Added
 
+- **2026-04-23 — bdd-suite feature, Phases 1–3 complete (Phase 4 execution pending):**
+  - PRD `docs/prds/bdd-suite.md` v1.2 (5 user stories, 13 non-goals, test-mode `HANGMAN_WORDS_FILE` constraint).
+  - PRD discussion `docs/prds/bdd-suite-discussion.md` (10 Q&A resolved).
+  - Research brief `docs/research/2026-04-23-bdd-suite.md` (10 library sections; 3 load-bearing findings: `tsx` not `ts-node`, dual json+ndjson formatters, Node ≥20 engines pin for cucumber-js 12).
+  - Design spec `docs/plans/2026-04-23-bdd-suite-design.md` (11 sections — architecture, cucumber.cjs config, §2b backend test-mode word-pool support, World class + browser hooks, step definitions, 33 scenarios across 11 feature files including Easy/Medium/Hard WIN+LOSS coverage via one-word "cat" pool).
+  - Implementation plan `docs/plans/2026-04-23-bdd-suite-plan.md` (23 tasks, Dispatch Plan filled, all Gherkin inline, no placeholders).
+  - Phase 3.3 plan review loop **PASSED after 6 iterations** (`498b5ab`). Claude + Codex in parallel; iter-1 found 12 blockers (API-shape/error-code/testid/score/dialog mismatches with real master code), iter-2 found 4 (masked-word UI-vs-API format from GameBoard's `split('').join(' ')`, scenario ordering, frontend fail-fast probe, @dialog tag-mutex guard, step-def fold-in), iter-3 through iter-5 found doc-drift only. Iter-6 both reviewers PLAN CLEAN.
+
 - **2026-04-22 — hangman-scaffold feature (Phase 4 nearly complete):**
   - Backend: FastAPI 0.136 + Pydantic 2.13 + SQLAlchemy 2.0.49 + SQLite + uvicorn 0.45. Sync Python stack per research brief. Six endpoints under `/api/v1/` (categories, session, games [POST], games/current [GET], games/{id}/guesses [POST], history). 108 tests passing (unit + integration), 100% branch coverage on `game.py`, ruff + mypy strict clean.
   - Frontend: React 19.2 + Vite 8.0.9 + TypeScript 5.7 + Vitest 3 + ESLint 9 flat config + Prettier 3. Six presentational components (HangmanFigure ASCII, Keyboard, ScorePanel, HistoryList, CategoryPicker, GameBoard) + App.tsx state owner (prop-drilling, no Context/Redux). 23 tests passing, `pnpm build` clean (196 kB JS / 62 kB gzipped).
