@@ -1,15 +1,17 @@
 """Word list loader + random picker."""
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from random import Random
+from types import MappingProxyType
 
 _MIN_WORD_LEN = 3
 
 
 @dataclass(frozen=True)
 class WordPool:
-    categories: dict[str, tuple[str, ...]]
+    categories: Mapping[str, tuple[str, ...]]
     # Dataclass default_factory — every WordPool has a working RNG on construction.
     # Excluded from equality/repr so it doesn't interfere with test assertions.
     _rng: Random = field(default_factory=Random, compare=False, repr=False)
@@ -74,7 +76,10 @@ def load_words(path: Path, rng: Random | None = None) -> WordPool:
         if not words:
             raise ValueError(f"category {cat!r} has no words")
 
+    frozen_cats: Mapping[str, tuple[str, ...]] = MappingProxyType(
+        {cat: tuple(words) for cat, words in accum.items()}
+    )
     return WordPool(
-        categories={cat: tuple(words) for cat, words in accum.items()},
+        categories=frozen_cats,
         _rng=rng if rng is not None else Random(),
     )

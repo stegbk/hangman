@@ -1,5 +1,6 @@
 """Session cookie dependency — hand-rolled, not Starlette SessionMiddleware."""
 
+import logging
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -12,6 +13,8 @@ from hangman.models import Session
 COOKIE_NAME = "session_id"
 COOKIE_MAX_AGE = 30 * 24 * 60 * 60  # 30 days
 
+logger = logging.getLogger("hangman.sessions")
+
 
 def get_or_create_session(
     request: Request,
@@ -22,6 +25,9 @@ def get_or_create_session(
     cookie_value = request.cookies.get(COOKIE_NAME)
     session: Session | None = db.get(Session, cookie_value) if cookie_value else None
     if session is None:
+        if cookie_value:
+            # Cookie was present but no matching Session row — stale cookie.
+            logger.info("session_miss cookie=%s...", cookie_value[:8])
         session = Session(id=str(uuid4()))
         db.add(session)
         db.flush()

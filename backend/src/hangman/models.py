@@ -3,7 +3,7 @@
 from datetime import UTC, datetime
 from typing import Final
 
-from sqlalchemy import ForeignKey, Index
+from sqlalchemy import ForeignKey, Index, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -43,7 +43,15 @@ class Game(Base):
     started_at: Mapped[datetime] = mapped_column(default=_now_utc)
     finished_at: Mapped[datetime | None] = mapped_column(default=None, nullable=True)
 
-    __table_args__ = (Index("ix_games_session_state", "session_id", "state"),)
+    __table_args__ = (
+        Index("ix_games_session_state", "session_id", "state"),
+        Index(
+            "uq_games_session_one_in_progress",
+            "session_id",
+            unique=True,
+            sqlite_where=text("state = 'IN_PROGRESS'"),
+        ),
+    )
 
 
 STATE_IN_PROGRESS: Final = "IN_PROGRESS"

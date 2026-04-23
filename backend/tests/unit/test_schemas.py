@@ -33,14 +33,16 @@ def test_game_create_bad_difficulty_raises() -> None:
 
 @pytest.mark.parametrize("letter", ["a", "Z", "m"])
 def test_guess_request_accepts_single_letter(letter: str) -> None:
+    # Pydantic no longer normalizes — letter is stored verbatim; apply_guess normalizes.
     gr = GuessRequest(letter=letter)
-    assert gr.letter == letter.lower()  # normalized
+    assert gr.letter == letter
 
 
 @pytest.mark.parametrize("bad", ["", "ab", "1", "!", " "])
-def test_guess_request_rejects_bad_letter(bad: str) -> None:
-    with pytest.raises(ValidationError):
-        GuessRequest(letter=bad)
+def test_guess_request_accepts_any_string_validation_deferred(bad: str) -> None:
+    # Validation is deferred to apply_guess (raises InvalidLetter); Pydantic accepts any str.
+    gr = GuessRequest(letter=bad)
+    assert gr.letter == bad
 
 
 # GameResponse — word is hidden mid-game, revealed when terminal

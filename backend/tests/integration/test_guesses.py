@@ -41,7 +41,7 @@ def test_invalid_letter_422(client) -> None:
     game = _start_game(client)
     res = _guess(client, game["id"], "1")
     assert res.status_code == 422
-    assert res.json()["error"]["code"] == "VALIDATION_ERROR"
+    assert res.json()["error"]["code"] == "INVALID_LETTER"
 
 
 def test_guess_on_nonexistent_game_404(client) -> None:

@@ -1,15 +1,11 @@
 """Pydantic v2 request/response DTOs. Response shapes are what clients see."""
 
 from datetime import datetime
-from typing import Annotated, Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, Field, field_validator, model_serializer
 
-from hangman.game import DIFFICULTY_LIVES, mask_word
-
-Difficulty = Literal["easy", "medium", "hard"]
-GameState = Literal["IN_PROGRESS", "WON", "LOST"]
-
+from hangman.game import DIFFICULTY_LIVES, Difficulty, GameState, mask_word
 
 # ---- Requests ----
 
@@ -18,19 +14,16 @@ class GameCreate(BaseModel):
     category: str = Field(min_length=1)
     difficulty: Difficulty
 
+    @field_validator("category", mode="before")
+    @classmethod
+    def _normalize_category(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            return v.strip().lower()
+        return v
+
 
 class GuessRequest(BaseModel):
-    letter: Annotated[str, Field(min_length=1, max_length=1)]
-
-    @field_validator("letter", mode="before")
-    @classmethod
-    def _normalize(cls, v: Any) -> Any:
-        if not isinstance(v, str) or len(v) != 1:
-            return v  # let Field constraint fail
-        lowered = v.lower()
-        if not ("a" <= lowered <= "z"):
-            raise ValueError("letter must be a-z")
-        return lowered
+    letter: str  # validated by apply_guess, which raises InvalidLetter
 
 
 # ---- Responses ----

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Any
 
@@ -10,6 +11,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import Response
+
+logger = logging.getLogger("hangman.errors")
 
 
 class HangmanError(Exception):
@@ -62,12 +65,20 @@ def _request_id(request: Request) -> str | None:
 
 async def handle_hangman_error(request: Request, exc: Exception) -> JSONResponse:
     assert isinstance(exc, HangmanError)
+    request_id = _request_id(request)
+    logger.warning(
+        "HangmanError %s %s (req=%s): %s",
+        exc.http_status,
+        exc.code,
+        request_id,
+        exc.message,
+    )
     return JSONResponse(
         status_code=exc.http_status,
         content=build_error_envelope(
             code=exc.code,
             message=exc.message,
-            request_id=_request_id(request),
+            request_id=request_id,
             details=exc.details,
         ),
     )
@@ -75,24 +86,39 @@ async def handle_hangman_error(request: Request, exc: Exception) -> JSONResponse
 
 async def handle_validation_error(request: Request, exc: Exception) -> JSONResponse:
     assert isinstance(exc, RequestValidationError)
+    request_id = _request_id(request)
+    logger.info(
+        "ValidationError %s %s (req=%s): %d errors",
+        422,
+        "VALIDATION_ERROR",
+        request_id,
+        len(exc.errors()),
+    )
     return JSONResponse(
         status_code=422,
         content=build_error_envelope(
             code="VALIDATION_ERROR",
             message="Request validation failed",
-            request_id=_request_id(request),
+            request_id=request_id,
             details=[{"loc": list(e["loc"]), "msg": e["msg"]} for e in exc.errors()],
         ),
     )
 
 
 async def handle_uncaught(request: Request, exc: Exception) -> JSONResponse:
+    request_id = _request_id(request)
+    logger.exception(
+        "Unhandled %s %s (req=%s)",
+        request.method,
+        request.url.path,
+        request_id,
+    )
     return JSONResponse(
         status_code=500,
         content=build_error_envelope(
             code="INTERNAL_ERROR",
             message="Internal server error",
-            request_id=_request_id(request),
+            request_id=request_id,
         ),
     )
 

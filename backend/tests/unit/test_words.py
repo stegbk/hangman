@@ -103,6 +103,14 @@ def test_wordpool_categories_are_tuples(tmp_path: Path) -> None:
     assert isinstance(pool.categories["animals"], tuple)
 
 
+def test_wordpool_categories_dict_is_immutable(tmp_path: Path) -> None:
+    """Fix 7 (P2-12): categories mapping must be a MappingProxyType — external mutation raises TypeError."""
+    p = _write(tmp_path, "animals,cat\n")
+    pool = load_words(p)
+    with pytest.raises(TypeError):
+        pool.categories["animals"] = ("hacked",)  # type: ignore[index]
+
+
 def test_load_real_words_txt_has_three_categories() -> None:
     repo_root = Path(__file__).parent.parent.parent
     pool = load_words(repo_root / "words.txt")

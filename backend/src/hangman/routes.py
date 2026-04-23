@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from typing import cast
 
 from fastapi import APIRouter, Depends, Request, Response, status
-from sqlalchemy import select
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session as OrmSession
 
 from hangman.db import get_session
@@ -31,6 +33,8 @@ from hangman.schemas import (
 )
 from hangman.sessions import get_or_create_session
 from hangman.words import WordPool
+
+logger = logging.getLogger("hangman.routes")
 
 router = APIRouter(prefix="/api/v1")
 
@@ -140,11 +144,18 @@ def start_game(
     prior = db.execute(stmt).scalar_one_or_none()
     forfeited_id: int | None = None
     if prior is not None:
+        old_streak = session.current_streak
         prior.state = STATE_LOST
         prior.score = 0
         prior.finished_at = _now_utc()
         session.current_streak = 0
         forfeited_id = prior.id
+        logger.info(
+            "forfeit game=%d session=%s streak=%d->0",
+            prior.id,
+            session.id[:8],
+            old_streak,
+        )
 
     word = pool.random_word(payload.category)
     allowed = DIFFICULTY_LIVES[payload.difficulty]
@@ -157,7 +168,41 @@ def start_game(
         state=STATE_IN_PROGRESS,
     )
     db.add(new_game)
-    db.flush()  # assign id
+    try:
+        db.flush()  # assign id; may raise IntegrityError if concurrent POST races us
+    except IntegrityError:
+        db.rollback()
+        # Another concurrent request already created an IN_PROGRESS game; re-select it
+        # and attempt forfeit once more.
+        prior2 = db.execute(stmt).scalar_one_or_none()
+        if prior2 is not None:
+            old_streak2 = session.current_streak
+            prior2.state = STATE_LOST
+            prior2.score = 0
+            prior2.finished_at = _now_utc()
+            session.current_streak = 0
+            forfeited_id = prior2.id
+            logger.info(
+                "forfeit game=%d session=%s streak=%d->0 (retry after IntegrityError)",
+                prior2.id,
+                session.id[:8],
+                old_streak2,
+            )
+            db.add(new_game)
+            try:
+                db.flush()
+            except IntegrityError as exc2:
+                raise HangmanError(
+                    code="CONCURRENT_START",
+                    http_status=409,
+                    message="Concurrent game creation detected, retry.",
+                ) from exc2
+        else:
+            raise HangmanError(
+                code="CONCURRENT_START",
+                http_status=409,
+                message="Concurrent game creation detected, retry.",
+            ) from None
 
     response.headers["Location"] = f"/api/v1/games/{new_game.id}"
     return _game_to_create_response(new_game, forfeited_id)
@@ -263,9 +308,6 @@ def list_history(
         .where(Game.session_id == session.id, Game.state.in_([STATE_WON, STATE_LOST]))
         .order_by(Game.finished_at.desc())
     )
-
-    # Count (cheap on SQLite for small tables)
-    from sqlalchemy import func
 
     total = db.execute(
         select(func.count(Game.id)).where(
