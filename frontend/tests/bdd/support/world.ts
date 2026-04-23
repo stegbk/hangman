@@ -20,6 +20,8 @@ export class HangmanWorld extends World {
 
   public dialogCount = 0;
 
+  public rememberedSessionValue: string | null = null;
+
   get backendUrl(): string {
     const port = process.env.HANGMAN_BACKEND_PORT ?? '8000';
     return `http://localhost:${port}`;

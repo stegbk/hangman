@@ -2,13 +2,14 @@
 
 import os
 from collections.abc import Iterator
-from pathlib import Path
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session as OrmSession
 from sqlalchemy.orm import sessionmaker
 
-_DEFAULT_DB = Path(__file__).resolve().parent.parent.parent / "hangman.db"
+from hangman.paths import BACKEND_ROOT
+
+_DEFAULT_DB = BACKEND_ROOT / "hangman.db"
 DATABASE_URL = os.environ.get("HANGMAN_DB_URL", f"sqlite:///{_DEFAULT_DB}")
 
 engine = create_engine(

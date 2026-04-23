@@ -5,9 +5,9 @@
  *   - Shared browser (BeforeAll/AfterAll)            — fast
  *   - Per-scenario context+page (Before/After)       — isolates cookies
  *
- * BeforeAll pings both servers once so the suite fails fast with a clear
- * "did you run make backend-test / make frontend?" message instead of a
- * cryptic ECONNREFUSED deep inside a scenario. Once per run is enough —
+ * BeforeAll pings both servers in parallel once so the suite fails fast with
+ * a clear "did you run make backend-test / make frontend?" message instead of
+ * a cryptic ECONNREFUSED deep inside a scenario. Once per run is enough —
  * the servers don't come and go mid-suite.
  */
 import { BeforeAll, Before, After, AfterAll, Status } from '@cucumber/cucumber';
@@ -16,46 +16,49 @@ import type { HangmanWorld } from './world';
 
 let sharedBrowser: Browser;
 
-function backendUrl(): string {
-  return `http://localhost:${process.env.HANGMAN_BACKEND_PORT ?? '8000'}`;
+interface ServiceProbe {
+  probeUrl: () => string;
+  makeTarget: string;
+  portEnvName: 'HANGMAN_BACKEND_PORT' | 'HANGMAN_FRONTEND_PORT';
 }
 
-function frontendUrl(): string {
-  return `http://localhost:${process.env.HANGMAN_FRONTEND_PORT ?? '3000'}`;
-}
+const SERVICES: Record<'Backend' | 'Frontend', ServiceProbe> = {
+  Backend: {
+    probeUrl: () =>
+      `http://localhost:${process.env.HANGMAN_BACKEND_PORT ?? '8000'}/api/v1/categories`,
+    makeTarget: 'make backend-test',
+    portEnvName: 'HANGMAN_BACKEND_PORT',
+  },
+  Frontend: {
+    probeUrl: () => `http://localhost:${process.env.HANGMAN_FRONTEND_PORT ?? '3000'}`,
+    makeTarget: 'make frontend',
+    portEnvName: 'HANGMAN_FRONTEND_PORT',
+  },
+};
 
-async function assertReachable(
-  label: 'backend' | 'frontend',
-  url: string,
-  makeTarget: 'make backend-test' | 'make frontend',
-  portEnvName: 'HANGMAN_BACKEND_PORT' | 'HANGMAN_FRONTEND_PORT',
-): Promise<void> {
+async function assertReachable(name: string, probe: ServiceProbe): Promise<void> {
+  const url = probe.probeUrl();
   try {
-    const res = await fetch(url);
     // The frontend root may return 404 for some SPA configurations but the
     // TCP connect and HTTP response are both fine — that's reachable enough
     // for our purposes. We only fail on thrown errors (ECONNREFUSED etc).
-    void res;
+    await fetch(url);
   } catch (err) {
-    const portHint = process.env[portEnvName]
-      ? ` (${portEnvName}=${process.env[portEnvName]})`
+    const portHint = process.env[probe.portEnvName]
+      ? ` (${probe.portEnvName}=${process.env[probe.portEnvName]})`
       : '';
     throw new Error(
-      `${label[0].toUpperCase() + label.slice(1)} not reachable at ${url} — did you run ` +
-        `\`${makeTarget}\`${portHint}? Underlying error: ${(err as Error).message}`,
+      `${name} not reachable at ${url} — did you run ` +
+        `\`${probe.makeTarget}\`${portHint}? Underlying error: ${(err as Error).message}`,
     );
   }
 }
 
 BeforeAll(async function () {
   // Fail-fast BEFORE launching chromium; cheaper for CI if servers are down.
-  await assertReachable(
-    'backend',
-    `${backendUrl()}/api/v1/categories`,
-    'make backend-test',
-    'HANGMAN_BACKEND_PORT',
-  );
-  await assertReachable('frontend', frontendUrl(), 'make frontend', 'HANGMAN_FRONTEND_PORT');
+  // Probes run in parallel — error messages carry the service name so a
+  // Promise.all rejection still identifies which service is down.
+  await Promise.all(Object.entries(SERVICES).map(([name, probe]) => assertReachable(name, probe)));
   sharedBrowser = await chromium.launch();
 });
 
@@ -71,6 +74,7 @@ Before(async function (this: HangmanWorld) {
   this.lastApiResponse = null;
   this.lastApiBody = null;
   this.dialogCount = 0;
+  this.rememberedSessionValue = null;
 });
 
 After(async function (this: HangmanWorld, { result }) {

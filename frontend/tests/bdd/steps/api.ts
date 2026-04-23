@@ -165,16 +165,14 @@ When('I remember the session cookie value', async function (this: HangmanWorld) 
   if (!sess) {
     throw new Error('No session_id cookie set yet — call /api/v1/session first.');
   }
-  (this as unknown as { rememberedSessionValue: string }).rememberedSessionValue = sess.value;
+  this.rememberedSessionValue = sess.value;
 });
 
 Then('the remembered session cookie value is unchanged', async function (this: HangmanWorld) {
-  const remembered = (this as unknown as { rememberedSessionValue?: string })
-    .rememberedSessionValue;
-  if (!remembered) {
+  if (this.rememberedSessionValue === null) {
     throw new Error("Nothing remembered — run 'I remember the session cookie value' first.");
   }
   const cookies = await this.context.cookies(this.backendUrl);
   const sess = cookies.find((c) => c.name === 'session_id');
-  expect(sess?.value).toBe(remembered);
+  expect(sess?.value).toBe(this.rememberedSessionValue);
 });
