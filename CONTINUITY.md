@@ -40,11 +40,11 @@ Ready for the next feature. Candidates: visual polish (SVG hangman + animations)
 > The PreToolUse hook blocks commit/push/PR if quality gates are incomplete.
 > Delete this section when no workflow is active (or set Command to `none`).
 
-| Field     | Value                     |
-| --------- | ------------------------- |
-| Command   | /new-feature bdd-suite    |
-| Phase     | 3 — Design                |
-| Next step | Write implementation plan |
+| Field     | Value                                                                |
+| --------- | -------------------------------------------------------------------- |
+| Command   | /new-feature bdd-suite                                               |
+| Phase     | 3 — Design                                                           |
+| Next step | Plan review loop iter-2 (re-run Claude + Codex against revised plan) |
 
 ### Checklist
 
@@ -58,8 +58,8 @@ Ready for the next feature. Candidates: visual polish (SVG hangman + animations)
 - [x] Approach comparison filled (single-viable architecture; sub-variations resolved: browser lifecycle A + gate automation A)
 - [x] Contrarian gate passed — VALIDATE (Codex auto-trigger confirmed default wins; research brief + PRD Q1/Q17 pre-resolved the design space)
 - [x] Council verdict (if triggered): N/A (gate VALIDATED — no council fired)
-- [ ] Plan written
-- [ ] Plan review loop (0 iterations) — iterate until no P0/P1/P2
+- [x] Plan written (`docs/plans/2026-04-23-bdd-suite-plan.md` — 23 tasks, Gherkin inline, dispatch plan filled, self-reviewed)
+- [ ] Plan review loop (1 iteration so far — Claude + Codex both flagged ~12 P0/P1/P2 issues around API-shape / error-code / testid / score / dialog-semantics mismatches with real code; iter-1 fixes applied, iter-2 review pending)
 - [ ] TDD execution complete
 - [ ] Code review loop (0 iterations) — iterate until no P0/P1/P2
 - [ ] Simplified

@@ -147,43 +147,42 @@ def _write_pool(tmp_path: Path, body: str) -> Path:
 
 def test_env_var_unset_loads_production_pool(monkeypatch):
     monkeypatch.delenv("HANGMAN_WORDS_FILE", raising=False)
-    # Force a fresh import path so the lifespan picks up the unset env var.
     from hangman.main import app
 
     with TestClient(app) as client:
-        categories = client.get("/api/v1/categories").json()["items"]
+        # Public API surface exposes category names only, not per-category
+        # word counts. Production pool has multiple words per category, so
+        # we verify via direct state inspection.
+        names = client.get("/api/v1/categories").json()["categories"]
+        pool = client.app.state.word_pool
 
-    # Production pool has animals/food/tech, each with multiple words.
-    names = {item["name"] for item in categories}
-    assert names == {"animals", "food", "tech"}
-    animals = next(item for item in categories if item["name"] == "animals")
-    assert animals["word_count"] > 1
+    assert set(names) == {"animals", "food", "tech"}
+    assert len(pool.categories["animals"]) > 1
 
 
 def test_env_var_absolute_path_loads_caller_pool(monkeypatch, tmp_path):
-    pool = _write_pool(
-        tmp_path,
-        "animals,cat\nfood,cat\ntech,cat\n",
-    )
-    monkeypatch.setenv("HANGMAN_WORDS_FILE", str(pool))
+    pool_file = _write_pool(tmp_path, "animals,cat\nfood,cat\ntech,cat\n")
+    monkeypatch.setenv("HANGMAN_WORDS_FILE", str(pool_file))
     from hangman.main import app
 
     with TestClient(app) as client:
-        categories = client.get("/api/v1/categories").json()["items"]
+        names = client.get("/api/v1/categories").json()["categories"]
+        pool = client.app.state.word_pool
 
-    assert {item["name"] for item in categories} == {"animals", "food", "tech"}
-    assert all(item["word_count"] == 1 for item in categories)
+    assert set(names) == {"animals", "food", "tech"}
+    # All three categories collapsed to exactly one word under the test pool.
+    assert all(len(words) == 1 for words in pool.categories.values())
 
 
 def test_env_var_relative_path_resolves_against_backend_root(monkeypatch):
-    # The real file we shipped in Step 1.
+    # Depends on backend/words.test.txt existing (shipped in Step 1).
     monkeypatch.setenv("HANGMAN_WORDS_FILE", "words.test.txt")
     from hangman.main import app
 
     with TestClient(app) as client:
-        categories = client.get("/api/v1/categories").json()["items"]
+        pool = client.app.state.word_pool
 
-    assert all(item["word_count"] == 1 for item in categories)
+    assert all(len(words) == 1 for words in pool.categories.values())
 
 
 def test_env_var_missing_file_raises_at_startup(monkeypatch):
@@ -201,7 +200,12 @@ def test_env_var_missing_file_raises_at_startup(monkeypatch):
 cd backend && uv run pytest tests/unit/test_words_file_env.py -v
 ```
 
-Expected: `test_env_var_absolute_path_loads_caller_pool` and `test_env_var_relative_path_resolves_against_backend_root` FAIL — lifespan doesn't read the env var yet, so it always loads the production pool regardless of what the env var says. The unset-case test passes by accident.
+Expected: 3 of 4 tests FAIL — the current lifespan ignores `HANGMAN_WORDS_FILE` entirely and always loads `backend/words.txt`, so:
+
+- `test_env_var_unset_loads_production_pool` — PASSES (lifespan already loads production when unset).
+- `test_env_var_absolute_path_loads_caller_pool` — FAILS (pool still has >1 word per category).
+- `test_env_var_relative_path_resolves_against_backend_root` — FAILS (same reason).
+- `test_env_var_missing_file_raises_at_startup` — FAILS (no `FileNotFoundError` raised; lifespan continues).
 
 - [ ] **Step 4: Patch `backend/src/hangman/main.py` lifespan**
 
@@ -416,12 +420,28 @@ After `.PHONY:` line edit:
 Append at the end of the file (after the existing `clean` target):
 
 ```makefile
+# BDD test-mode backend: isolated SQLite file (so BDD runs never touch the
+# production hangman.db) + test-mode word pool (one-word "cat" per category).
 backend-test:
-	cd backend && HANGMAN_WORDS_FILE=words.test.txt uv run uvicorn hangman.main:app --reload --host 127.0.0.1 --port $(HANGMAN_BACKEND_PORT)
+	cd backend && \
+	HANGMAN_WORDS_FILE=words.test.txt \
+	HANGMAN_DB_URL=sqlite:///$(CURDIR)/backend/hangman.test.db \
+	uv run uvicorn hangman.main:app --reload --host 127.0.0.1 --port $(HANGMAN_BACKEND_PORT)
 
 bdd:
-	cd frontend && HANGMAN_BACKEND_PORT=$(HANGMAN_BACKEND_PORT) HANGMAN_FRONTEND_PORT=$(HANGMAN_FRONTEND_PORT) pnpm bdd
+	cd frontend && \
+	HANGMAN_BACKEND_PORT=$(HANGMAN_BACKEND_PORT) \
+	HANGMAN_FRONTEND_PORT=$(HANGMAN_FRONTEND_PORT) \
+	pnpm bdd
 ```
+
+Add `backend/hangman.test.db*` to `.gitignore` (root) so SQLite `-wal` / `-shm` sidecar files don't get committed either:
+
+```bash
+grep -qxF 'backend/hangman.test.db*' .gitignore || echo 'backend/hangman.test.db*' >> .gitignore
+```
+
+**Port conflict note:** `make backend` and `make backend-test` both bind `$(HANGMAN_BACKEND_PORT)`. You cannot run both simultaneously on the same port — stop `make backend` before running `make backend-test`, or override the port on one of them (e.g., `make backend-test HANGMAN_BACKEND_PORT=8001`).
 
 - [ ] **Step 2: Dry-run both targets to verify they expand correctly**
 
@@ -661,12 +681,28 @@ git commit -m "feat(bdd): browser-lifecycle hooks
 /**
  * Cross-cutting steps and hooks.
  *
- * The `@dialog-tracked` Before hook installs a page-level dialog listener so
- * `Then no dialog has fired` can assert the UC3b invariant (no forfeit
- * confirm on terminal games). Scenarios that need this behavior tag
- * themselves `@dialog-tracked`.
+ * Three dialog hooks are registered on mutually-exclusive tags:
+ *
+ *   @dialog-accept  → listener hits OK on every window.confirm / alert.
+ *                     Use in UC3 forfeit (user confirms they want to
+ *                     abandon the active game).
+ *
+ *   @dialog-reject  → listener hits Cancel. Use for the "user cancelled"
+ *                     branch of any confirm flow.
+ *
+ *   @dialog-tracked → listener only counts dialogs without handling them.
+ *                     Use when the scenario asserts that NO dialog fired
+ *                     (e.g., UC3b where starting a new game after a loss
+ *                     must skip the forfeit confirm entirely). An
+ *                     unexpected dialog will also block subsequent
+ *                     Playwright actions — the desired loud-failure.
+ *
+ * Scenarios must pick exactly one of the three tags if they interact
+ * with any confirm()/alert(). `this.dialogCount` is reset in the
+ * per-scenario Before hook in support/hooks.ts.
  */
-import { Given, Before } from "@cucumber/cucumber";
+import { Given, Then, Before } from "@cucumber/cucumber";
+import { expect } from "@playwright/test";
 import type { HangmanWorld } from "../support/world";
 
 // A no-op, documentation-only step. The Before hook in support/hooks.ts
@@ -676,15 +712,37 @@ Given("the backend and frontend are running", function (this: HangmanWorld) {
   // intentionally empty
 });
 
-Before({ tags: "@dialog-tracked" }, async function (this: HangmanWorld) {
+Before({ tags: "@dialog-accept" }, async function (this: HangmanWorld) {
   this.page.on("dialog", async (dialog) => {
     this.dialogCount += 1;
-    // Dismiss so the scenario can continue — an unhandled dialog blocks
-    // all subsequent clicks.
+    await dialog.accept();
+  });
+});
+
+Before({ tags: "@dialog-reject" }, async function (this: HangmanWorld) {
+  this.page.on("dialog", async (dialog) => {
+    this.dialogCount += 1;
     await dialog.dismiss();
   });
 });
+
+Before({ tags: "@dialog-tracked" }, async function (this: HangmanWorld) {
+  this.page.on("dialog", async (_dialog) => {
+    this.dialogCount += 1;
+    // Deliberately unhandled — see module-level comment.
+  });
+});
+
+Then("no dialog has fired", function (this: HangmanWorld) {
+  expect(this.dialogCount).toBe(0);
+});
+
+Then("a dialog has fired", function (this: HangmanWorld) {
+  expect(this.dialogCount).toBeGreaterThanOrEqual(1);
+});
 ```
+
+Because `Then no dialog has fired` and `Then a dialog has fired` now live here, remove the duplicate `Then no dialog has fired` registration from `ui.ts` (Task 8) — the single source of truth for dialog-count assertions is `shared.ts`.
 
 - [ ] **Step 2: Typecheck**
 
@@ -763,12 +821,18 @@ function getPath(body: unknown, dotPath: string): unknown {
 
 function currentGameId(world: HangmanWorld): string {
   const id = getPath(world.lastApiBody, "id");
-  if (typeof id !== "string" || id.length === 0) {
+  // Backend Game.id is int (backend/src/hangman/models.py) — we accept
+  // number | string and let the caller interpolate. Empty string / 0 /
+  // null / undefined all fail this guard.
+  if (
+    (typeof id !== "number" || !Number.isFinite(id)) &&
+    (typeof id !== "string" || id.length === 0)
+  ) {
     throw new Error(
       "No current game id in lastApiBody — start a game before calling this step.",
     );
   }
-  return id;
+  return String(id);
 }
 
 Given(
@@ -929,10 +993,12 @@ for 'fresh session' variants."
  *
  * Every selector uses `data-testid` or role — never raw CSS classes
  * (rules/testing.md "Use stable selectors"). The keyboard-letter step
- * implements the Phase-5.1 `guessPending` sync barrier: wait for the
- * letter button to be enabled before clicking, wait for it to be disabled
- * after (the app marks guessed letters disabled), so the next click
- * doesn't race an in-flight /guesses POST.
+ * uses a real response-based sync barrier (page.waitForResponse on the
+ * /guesses endpoint) rather than just polling disabled state, because
+ * the keyboard is disabled SYNCHRONOUSLY on click (guessPending=true),
+ * which races with the actual /guesses POST completing and the resulting
+ * UI state update. The response wait guarantees the server has committed
+ * the guess AND React has reconciled to the post-response state.
  */
 import { Given, When, Then } from "@cucumber/cucumber";
 import { expect } from "@playwright/test";
@@ -954,12 +1020,24 @@ When(
   "I click the keyboard letter {string}",
   async function (this: HangmanWorld, letter: string) {
     const btn = this.page.getByTestId(`keyboard-letter-${letter}`);
-    // If the game already terminated, the letter button may be gone entirely
-    // — we don't want to fail the scenario just because we tried to click
-    // past a win/loss. Callers who care use 'Then I see a terminal game
-    // banner' to assert terminal state before or after.
+    // Precondition: button is enabled (guessPending cleared from any
+    // previous guess, letter not yet in guessedLetters).
     await expect(btn).toBeEnabled({ timeout: 3000 });
+    // Register the response listener BEFORE click so we can't miss a
+    // fast response. Matches POST /api/v1/games/{id}/guesses for either
+    // success (200) or domain error (422/409) so test-of-error scenarios
+    // still unblock here.
+    const guessResponse = this.page.waitForResponse(
+      (resp) =>
+        /\/api\/v1\/games\/\d+\/guesses/.test(resp.url()) &&
+        resp.request().method() === "POST",
+      { timeout: 5000 },
+    );
     await btn.click();
+    await guessResponse;
+    // After response + React commit, the clicked letter should now be in
+    // guessedLetters and the button permanently disabled. This is the
+    // post-response state, not the in-flight state.
     await expect(btn).toBeDisabled({ timeout: 3000 });
   },
 );
@@ -1022,10 +1100,6 @@ Then(
   },
 );
 
-Then("no dialog has fired", function (this: HangmanWorld) {
-  expect(this.dialogCount).toBe(0);
-});
-
 Then(
   "the masked word shows {string}",
   async function (this: HangmanWorld, expected: string) {
@@ -1051,16 +1125,30 @@ cd frontend && pnpm exec tsc --noEmit
 
 - [ ] **Step 3: Verify the existing UI has the testids we're selecting**
 
-Spot-check the components quickly:
+Spot-check the components:
 
 ```bash
-cd frontend && grep -rn 'data-testid' src/components/ | grep -E "score-panel|score-total|streak-current|category-select|difficulty-|keyboard-letter-|game-won|game-lost|history-item-|masked-word" | head -20
+cd frontend && grep -rn 'data-testid' src/components/ src/App.tsx | \
+  grep -E "score-panel|score-total|streak-current|category-select|difficulty-|keyboard-letter-|game-won|game-lost|history-item-|masked-word|start-game-btn" | \
+  sort
 ```
 
-Expected: all 10 testid patterns present. If any are missing (in particular `masked-word`, which wasn't necessarily in the scaffold), add the missing `data-testid` attribute to the corresponding component before continuing:
+Expected: ALL of the following testids present in the scaffold (verified 2026-04-23 — see design spec §5 and plan self-review):
 
-- `src/components/GameBoard.tsx` must render the masked word with `data-testid="masked-word"`.
-- If it's not there, add it. That change will be picked up in this task's commit.
+- `score-panel` (`ScorePanel.tsx`)
+- `score-total` (`ScorePanel.tsx`)
+- `streak-current` (`ScorePanel.tsx`)
+- `category-select` (`CategoryPicker.tsx`)
+- `difficulty-easy` / `difficulty-medium` / `difficulty-hard` (`CategoryPicker.tsx`)
+- `start-game-btn` (`CategoryPicker.tsx`) — **note: the feature-file steps use `I click the "start-game-btn" button`, NOT `start-new-game`. The button's real testid is `start-game-btn`.**
+- `keyboard-letter-{a-z}` (`Keyboard.tsx`)
+- `game-won` / `game-lost` (`GameBoard.tsx`)
+- `masked-word` (`GameBoard.tsx`)
+- `lives-remaining` (`GameBoard.tsx`) — used by mid-game-reload + some strengthened forfeit assertions
+- `game-board-empty` (`GameBoard.tsx`) — used to assert "no active game" state after a fresh start-over from terminal
+- `history-item-{id}` (`HistoryList.tsx`)
+
+If the grep output is missing ANY of the above, the plan executor must investigate why before proceeding — the feature files assume every item above is present on master at this worktree's branch-point.
 
 - [ ] **Step 4: Commit**
 
@@ -1090,9 +1178,10 @@ documented in src/components/ testids."
 ```gherkin
 Feature: GET /api/v1/categories
 
-  The categories endpoint returns the list of word categories available for
-  the player to pick from. Under the BDD test-mode pool this is exactly
-  {animals, food, tech} with word_count=1 each.
+  The categories endpoint returns the list of word-category names and
+  difficulty options available for the player to pick from. Under the BDD
+  test-mode pool the category set is exactly {animals, food, tech}; the
+  difficulty set is {easy, medium, hard} regardless of pool.
 
   Background:
     Given the backend and frontend are running
@@ -1101,24 +1190,24 @@ Feature: GET /api/v1/categories
   Scenario: Returns the list of categories
     When I request "/api/v1/categories"
     Then the response status is 200
-    And the response body array "items" has length 3
+    And the response body array "categories" has length 3
 
   @happy
-  Scenario: Each category exposes a name and a word_count
+  Scenario: Response exposes categories and difficulties
     When I request "/api/v1/categories"
     Then the response status is 200
-    And the response body has "items.0.name" equal to "animals"
-    And the response body has "items.0.word_count" equal to "1"
-    And the response body has "items.1.name" equal to "food"
-    And the response body has "items.2.name" equal to "tech"
+    And the response body has "categories.0" equal to "animals"
+    And the response body has "categories.1" equal to "food"
+    And the response body has "categories.2" equal to "tech"
+    And the response body array "difficulties" has length 3
 
   @edge
   Scenario: Categories are returned in stable alphabetical order
     When I request "/api/v1/categories"
     Then the response status is 200
-    And the response body has "items.0.name" equal to "animals"
-    And the response body has "items.1.name" equal to "food"
-    And the response body has "items.2.name" equal to "tech"
+    And the response body has "categories.0" equal to "animals"
+    And the response body has "categories.1" equal to "food"
+    And the response body has "categories.2" equal to "tech"
 ```
 
 - [ ] **Step 2: Start backend-test + frontend in separate terminals**
@@ -1166,8 +1255,8 @@ git commit -m "feat(bdd): categories.feature (3 scenarios, 1 smoke)"
 Feature: GET /api/v1/session
 
   The session endpoint issues or echoes a browser-scoped session cookie
-  used to key all game/history state. Idempotent — a second call with the
-  same cookie returns the same id.
+  used to key all game/history state. Idempotent — a second call from the
+  same session reuses the cookie value.
 
   Background:
     Given the backend and frontend are running
@@ -1176,22 +1265,68 @@ Feature: GET /api/v1/session
   Scenario: First call issues a session cookie
     When I request "/api/v1/session"
     Then the response status is 200
-    And the Set-Cookie header contains "HttpOnly"
-    And the Set-Cookie header contains "SameSite=Lax"
+    And the Set-Cookie header contains (case-insensitive) "HttpOnly"
+    And the Set-Cookie header contains (case-insensitive) "samesite=lax"
 
   @happy
-  Scenario: Subsequent calls are idempotent
+  Scenario: Subsequent same-session calls reuse the cookie value
+    When I remember the session cookie value
     When I request "/api/v1/session"
     Then the response status is 200
-    When I request "/api/v1/session"
-    Then the response status is 200
+    And the remembered session cookie value is unchanged
 
   @edge
   Scenario: Session cookie sets a 30-day Max-Age
     When I request "/api/v1/session"
     Then the response status is 200
-    And the Set-Cookie header contains "Max-Age=2592000"
+    And the Set-Cookie header contains (case-insensitive) "max-age=2592000"
 ```
+
+**Step-def additions needed (fold into Task 7 `api.ts`):**
+
+Add a case-insensitive Set-Cookie matcher + two helpers for the idempotence scenario. Update Task 7 Step 1's `api.ts` content to include:
+
+```ts
+Then(
+  "the Set-Cookie header contains (case-insensitive) {string}",
+  function (this: HangmanWorld, needle: string) {
+    if (!this.lastApiResponse) throw new Error("No API response recorded");
+    const headers = this.lastApiResponse.headers();
+    const cookie = (headers["set-cookie"] ?? "").toLowerCase();
+    expect(cookie).toContain(needle.toLowerCase());
+  },
+);
+
+When(
+  "I remember the session cookie value",
+  async function (this: HangmanWorld) {
+    const cookies = await this.context.cookies(this.backendUrl);
+    const sess = cookies.find((c) => c.name === "session_id");
+    if (!sess)
+      throw new Error("No session_id cookie set yet — call /session first");
+    (
+      this as unknown as { rememberedSessionValue: string }
+    ).rememberedSessionValue = sess.value;
+  },
+);
+
+Then(
+  "the remembered session cookie value is unchanged",
+  async function (this: HangmanWorld) {
+    const remembered = (this as unknown as { rememberedSessionValue?: string })
+      .rememberedSessionValue;
+    if (!remembered)
+      throw new Error(
+        "Nothing remembered — run 'I remember the session cookie value' first",
+      );
+    const cookies = await this.context.cookies(this.backendUrl);
+    const sess = cookies.find((c) => c.name === "session_id");
+    expect(sess?.value).toBe(remembered);
+  },
+);
+```
+
+**Cookie name:** `session_id` (verified 2026-04-23 against `backend/src/hangman/sessions.py:12 COOKIE_NAME`). If this constant is ever renamed, the `.find()` call will return `undefined` and the step throws with a clear message — a fail-loud mismatch.
 
 - [ ] **Step 2: Run the feature**
 
@@ -1238,7 +1373,7 @@ Feature: POST /api/v1/games (start and forfeit-chain)
     And the response body has "state" equal to "IN_PROGRESS"
     And the response body has "category" equal to "animals"
     And the response body has "difficulty" equal to "easy"
-    And the response body has "lives_total" equal to "8"
+    And the response body has "wrong_guesses_allowed" equal to "8"
     And the response body field "word" is absent
 
   @happy
@@ -1248,7 +1383,7 @@ Feature: POST /api/v1/games (start and forfeit-chain)
       { "category": "food", "difficulty": "medium" }
       """
     Then the response status is 201
-    And the response body has "lives_total" equal to "6"
+    And the response body has "wrong_guesses_allowed" equal to "6"
     And the response body field "word" is absent
 
   @failure
@@ -1258,7 +1393,7 @@ Feature: POST /api/v1/games (start and forfeit-chain)
       { "category": "nonexistent", "difficulty": "easy" }
       """
     Then the response status is 422
-    And the response error code is "VALIDATION_ERROR"
+    And the response error code is "UNKNOWN_CATEGORY"
 
   @edge
   Scenario: Starting a second game forfeits the first
@@ -1358,24 +1493,26 @@ git commit -m "feat(bdd): games-current.feature (3 scenarios, 1 smoke)"
 ```gherkin
 Feature: POST /api/v1/games/{id}/guesses
 
-  Submits a letter guess. Correct letters are appended to guessed_correct;
-  misses decrement lives_remaining. Repeated letters and guesses after
-  terminal state are rejected with domain error codes. Malformed letter
-  inputs are rejected at the schema layer (422).
+  Submits a letter guess. Correct letters appear in guessed_letters and
+  reveal positions in masked_word; misses decrement lives_remaining. All
+  domain violations (re-guessing, terminal game, malformed letter) return
+  specific error codes via the backend's HangmanError envelope.
 
   Background:
     Given the backend and frontend are running
     And I start a new game with category "animals" and difficulty "easy"
 
   @happy @smoke
-  Scenario: Correct letter updates the game
+  Scenario: Correct letter reveals positions in masked_word
     When I POST to the current game's guesses endpoint with body:
       """
       { "letter": "c" }
       """
     Then the response status is 200
     And the response body has "state" equal to "IN_PROGRESS"
-    And the response body has "last_guess_was_correct" equal to "true"
+    And the response body has "guessed_letters" equal to "c"
+    And the response body has "masked_word" equal to "c__"
+    And the response body has "lives_remaining" equal to "8"
 
   @happy
   Scenario: Incorrect letter decrements lives
@@ -1384,7 +1521,7 @@ Feature: POST /api/v1/games/{id}/guesses
       { "letter": "z" }
       """
     Then the response status is 200
-    And the response body has "last_guess_was_correct" equal to "false"
+    And the response body has "guessed_letters" equal to "z"
     And the response body has "lives_remaining" equal to "7"
 
   @failure
@@ -1398,7 +1535,7 @@ Feature: POST /api/v1/games/{id}/guesses
       """
       { "letter": "c" }
       """
-    Then the response status is 409
+    Then the response status is 422
     And the response error code is "ALREADY_GUESSED"
 
   @failure
@@ -1411,16 +1548,16 @@ Feature: POST /api/v1/games/{id}/guesses
       { "letter": "b" }
       """
     Then the response status is 409
-    And the response error code is "GAME_FINALIZED"
+    And the response error code is "GAME_ALREADY_FINISHED"
 
   @edge
-  Scenario: Multi-character letter is rejected at schema layer
+  Scenario: Multi-character letter is rejected by domain validation
     When I POST to the current game's guesses endpoint with body:
       """
       { "letter": "ab" }
       """
     Then the response status is 422
-    And the response error code is "VALIDATION_ERROR"
+    And the response error code is "INVALID_LETTER"
 ```
 
 - [ ] **Step 2: Run**
@@ -1431,7 +1568,7 @@ cd frontend && pnpm bdd tests/bdd/features/guesses.feature
 
 Expected: `5 scenarios (5 passed)`.
 
-**Note on error codes:** if the backend emits a different code string for terminal-game guesses (e.g., `GAME_TERMINATED` instead of `GAME_FINALIZED`), update the Gherkin to match the actual code. Do NOT change the backend to match the scenario — the scenario documents the real contract.
+**Error-code reference (verified 2026-04-23 against `backend/src/hangman/routes.py`):** `ALREADY_GUESSED` → 422 (game is still active, user just re-submitted); `GAME_ALREADY_FINISHED` → 409 (game is terminal, no further guesses possible); `INVALID_LETTER` → 422 (domain-layer validation raises `InvalidLetter` in `game.py`, caught in `routes.py:256`).
 
 - [ ] **Step 3: Commit**
 
@@ -1453,8 +1590,8 @@ git commit -m "feat(bdd): guesses.feature (5 scenarios, 1 smoke)"
 ```gherkin
 Feature: GET /api/v1/history
 
-  Returns the session's terminal (finalized) games in reverse-chronological
-  order. Supports pagination via page/page_size.
+  Returns the session's terminal (finalized) games ordered by finished_at
+  DESC. Supports pagination via page/page_size.
 
   Background:
     Given the backend and frontend are running
@@ -1468,7 +1605,7 @@ Feature: GET /api/v1/history
     When I request "/api/v1/history"
     Then the response status is 200
     And the response body array "items" has length 1
-    And the response body has "items.0.state" equal to "GAME_WON"
+    And the response body has "items.0.state" equal to "WON"
 
   @happy
   Scenario: Most recent completion appears first
@@ -1484,8 +1621,8 @@ Feature: GET /api/v1/history
     When I request "/api/v1/history"
     Then the response status is 200
     And the response body array "items" has length 2
-    And the response body has "items.0.state" equal to "GAME_LOST"
-    And the response body has "items.1.state" equal to "GAME_WON"
+    And the response body has "items.0.state" equal to "LOST"
+    And the response body has "items.1.state" equal to "WON"
 
   @edge
   Scenario: Empty history returns an empty items array
@@ -1549,15 +1686,17 @@ Feature: UC1 — Play a round to completion through the UI
     And I open the app
     When I select category "animals"
     And I select difficulty "easy"
-    And I click the "start-new-game" button
+    And I click the "start-game-btn" button
     And I click the keyboard letter "c"
     And I click the keyboard letter "a"
     And I click the keyboard letter "t"
     Then I see the game-won banner
-    And the total score is "1"
+    And the total score is "70"
     And the current streak is "1"
     And history contains 1 item
 ```
+
+**Scoring math:** first win = `(correct_reveals × 10 + lives_remaining × 5) × streak_multiplier(1)` = `(3 × 10 + 8 × 5) × 1` = `70`. Formula lives at `backend/src/hangman/game.py:compute_round_score`.
 
 - [ ] **Step 2: Run**
 
@@ -1566,8 +1705,6 @@ cd frontend && pnpm bdd tests/bdd/features/play-round.feature
 ```
 
 Expected: `1 scenario (1 passed)`.
-
-**Note:** if the "New Game" button's testid in the UI is something other than `start-new-game` (e.g., `new-game-btn`), update the step to match the actual testid. Confirm with `grep -rn 'data-testid' frontend/src/components/`.
 
 - [ ] **Step 3: Commit**
 
@@ -1589,9 +1726,9 @@ git commit -m "feat(bdd): play-round.feature (UC1, 1 scenario, smoke)"
 ```gherkin
 Feature: UC2 — A loss resets the current streak
 
-  After winning a game the streak is 1. Starting a second game and losing
-  it must reset the current streak to 0 while keeping the total score at 1
-  (wins never decrement the score).
+  After winning a game the streak is 1 (score 70). Starting a second game
+  and losing it must reset the current streak to 0 while keeping the total
+  score at 70 (losses add zero; wins never decrement).
 
   @happy
   Scenario: Win then lose — streak resets, score preserved
@@ -1599,21 +1736,21 @@ Feature: UC2 — A loss resets the current streak
     And I open the app
     And I select category "animals"
     And I select difficulty "easy"
-    When I click the "start-new-game" button
+    When I click the "start-game-btn" button
     And I click the keyboard letter "c"
     And I click the keyboard letter "a"
     And I click the keyboard letter "t"
     Then I see the game-won banner
-    And the total score is "1"
+    And the total score is "70"
     And the current streak is "1"
     When I select difficulty "hard"
-    And I click the "start-new-game" button
+    And I click the "start-game-btn" button
     And I click the keyboard letter "b"
     And I click the keyboard letter "d"
     And I click the keyboard letter "e"
     And I click the keyboard letter "f"
     Then I see the game-lost banner
-    And the total score is "1"
+    And the total score is "70"
     And the current streak is "0"
     And history contains 2 items
 ```
@@ -1647,25 +1784,29 @@ git commit -m "feat(bdd): loss-resets-streak.feature (UC2, 1 scenario)"
 Feature: UC3 + UC3b — Forfeit an in-progress game, but not a terminal one
 
   UC3: starting a new game while one is IN_PROGRESS must show a confirm
-  dialog (the user is about to forfeit) and, on confirm, finalize the
-  previous game as a forfeit.
+  dialog (the user is about to forfeit). On OK, the backend auto-forfeits
+  the previous game and starts a fresh one.
 
-  UC3b: after a game has already reached a terminal state (won or lost),
-  clicking New Game must NOT show a forfeit confirm — there's nothing to
-  forfeit. This is the bug caught in Phase 5.1 of the scaffold.
+  UC3b: after a game has already reached a terminal state (WON / LOST),
+  clicking Start Game must NOT show a forfeit confirm — there's nothing
+  active to forfeit. This is the bug caught in Phase 5.1 of the scaffold.
 
-  @happy @smoke @dialog-tracked
-  Scenario: Starting a new game mid-play prompts forfeit confirm
+  @happy @smoke @dialog-accept
+  Scenario: Starting a new game mid-play prompts forfeit confirm and starts fresh
     Given the backend and frontend are running
     And I open the app
     And I select category "animals"
     And I select difficulty "easy"
-    When I click the "start-new-game" button
+    When I click the "start-game-btn" button
     And I click the keyboard letter "c"
-    And I click the "start-new-game" button
-    Then I see the score panel
-    # The @dialog-tracked hook dismissed the confirm dialog; dialogCount == 1.
-    # The new game started (backend auto-forfeits the previous one).
+    # Prior game now has guessed_letters="c" and masked_word="c__".
+    And I click the "start-game-btn" button
+    # The @dialog-accept hook clicked OK on the window.confirm dialog.
+    Then a dialog has fired
+    # Fresh game rehydrated: masked word is back to three underscores and
+    # 'c' is no longer marked as already-guessed on the keyboard.
+    And the masked word shows "___"
+    And the keyboard letter "c" is enabled
 
   @happy @smoke @dialog-tracked
   Scenario: Starting a new game after a loss does not prompt forfeit confirm
@@ -1673,15 +1814,32 @@ Feature: UC3 + UC3b — Forfeit an in-progress game, but not a terminal one
     And I open the app
     And I select category "animals"
     And I select difficulty "hard"
-    When I click the "start-new-game" button
+    When I click the "start-game-btn" button
     And I click the keyboard letter "b"
     And I click the keyboard letter "d"
     And I click the keyboard letter "e"
     And I click the keyboard letter "f"
     Then I see the game-lost banner
-    When I click the "start-new-game" button
-    Then I see the score panel
-    And no dialog has fired
+    When I click the "start-game-btn" button
+    # No forfeit confirm because the prior game was already LOST (terminal).
+    Then no dialog has fired
+    # Fresh game rehydrated: banner is gone, masked_word reset.
+    And the masked word shows "___"
+```
+
+**Step-def addition needed (fold into Task 8 `ui.ts`):**
+
+The second forfeit scenario asserts a letter button is _enabled_ (not disabled) after the new game starts. Add this step to `ui.ts`:
+
+```ts
+Then(
+  "the keyboard letter {string} is enabled",
+  async function (this: HangmanWorld, letter: string) {
+    await expect(
+      this.page.getByTestId(`keyboard-letter-${letter}`),
+    ).toBeEnabled();
+  },
+);
 ```
 
 - [ ] **Step 2: Run**
@@ -1722,13 +1880,15 @@ Feature: UC4 — Mid-game reload restores the in-progress game
     And I open the app
     And I select category "animals"
     And I select difficulty "easy"
-    When I click the "start-new-game" button
+    When I click the "start-game-btn" button
     And I click the keyboard letter "c"
     And I reload the page
     Then I see the score panel
-    And the masked word shows "c _ _"
+    And the masked word shows "c__"
     And the keyboard letter "c" is disabled
 ```
+
+**Masked-word format:** `backend/src/hangman/words.py::mask_word` returns the word with unrevealed positions as ASCII underscores and no inter-character spacing (the `0.5em` letter-spacing in `GameBoard.tsx` is CSS-only, not textual). For the word "cat" with only `c` guessed: `"c__"`. All feature files use this format consistently.
 
 - [ ] **Step 2: Run**
 
@@ -1737,8 +1897,6 @@ cd frontend && pnpm bdd tests/bdd/features/mid-game-reload.feature
 ```
 
 Expected: `1 scenario (1 passed)`.
-
-**Note on masked-word formatting:** The `"c _ _"` format is the assumption. If the scaffold's `GameBoard` renders the mask differently (e.g., `c__` with no spaces or `c • •`), update the expected string to the literal rendered text. Run the scenario once, copy the `toHaveText` expected vs. actual from the failure message, patch the Gherkin.
 
 - [ ] **Step 3: Commit**
 
@@ -1773,7 +1931,7 @@ Feature: Per-difficulty WIN and LOSS mistake counts
   @happy
   Scenario: Easy WIN
     When I select difficulty "easy"
-    And I click the "start-new-game" button
+    And I click the "start-game-btn" button
     And I click the keyboard letter "c"
     And I click the keyboard letter "a"
     And I click the keyboard letter "t"
@@ -1782,7 +1940,7 @@ Feature: Per-difficulty WIN and LOSS mistake counts
   @happy
   Scenario: Easy LOSS after 8 misses
     When I select difficulty "easy"
-    And I click the "start-new-game" button
+    And I click the "start-game-btn" button
     And I click the keyboard letter "b"
     And I click the keyboard letter "d"
     And I click the keyboard letter "e"
@@ -1796,7 +1954,7 @@ Feature: Per-difficulty WIN and LOSS mistake counts
   @happy
   Scenario: Medium WIN
     When I select difficulty "medium"
-    And I click the "start-new-game" button
+    And I click the "start-game-btn" button
     And I click the keyboard letter "c"
     And I click the keyboard letter "a"
     And I click the keyboard letter "t"
@@ -1805,7 +1963,7 @@ Feature: Per-difficulty WIN and LOSS mistake counts
   @happy
   Scenario: Medium LOSS after 6 misses
     When I select difficulty "medium"
-    And I click the "start-new-game" button
+    And I click the "start-game-btn" button
     And I click the keyboard letter "b"
     And I click the keyboard letter "d"
     And I click the keyboard letter "e"
@@ -1817,7 +1975,7 @@ Feature: Per-difficulty WIN and LOSS mistake counts
   @happy @smoke
   Scenario: Hard WIN
     When I select difficulty "hard"
-    And I click the "start-new-game" button
+    And I click the "start-game-btn" button
     And I click the keyboard letter "c"
     And I click the keyboard letter "a"
     And I click the keyboard letter "t"
@@ -1826,7 +1984,7 @@ Feature: Per-difficulty WIN and LOSS mistake counts
   @happy
   Scenario: Hard LOSS after 4 misses
     When I select difficulty "hard"
-    And I click the "start-new-game" button
+    And I click the "start-game-btn" button
     And I click the keyboard letter "b"
     And I click the keyboard letter "d"
     And I click the keyboard letter "e"
@@ -2073,31 +2231,31 @@ Advancing to Phase 5 (code review loop)."
 
 > For parallel subagent execution (Phase 4, `superpowers:subagent-driven-development`). Serial execution ignores this and runs tasks 1→23 in order.
 
-| Task ID | Depends on  | Writes (concrete file paths)                                                                                                |
-| ------- | ----------- | --------------------------------------------------------------------------------------------------------------------------- |
-| T1      | —           | `backend/words.test.txt`, `backend/tests/unit/test_words_file_env.py`, `backend/src/hangman/main.py`                        |
-| T2      | —           | `frontend/package.json`, `frontend/pnpm-lock.yaml`, `frontend/cucumber.cjs`, `frontend/tests/bdd/**/.gitkeep`, `.gitignore` |
-| T3      | T1, T2      | `Makefile`                                                                                                                  |
-| T4      | T2          | `frontend/tests/bdd/support/world.ts`                                                                                       |
-| T5      | T4          | `frontend/tests/bdd/support/hooks.ts`                                                                                       |
-| T6      | T5          | `frontend/tests/bdd/steps/shared.ts`                                                                                        |
-| T7      | T5          | `frontend/tests/bdd/steps/api.ts`                                                                                           |
-| T8      | T5          | `frontend/tests/bdd/steps/ui.ts`, possibly `frontend/src/components/GameBoard.tsx` (add `masked-word` testid if absent)     |
-| T9      | T6, T7      | `frontend/tests/bdd/features/categories.feature`                                                                            |
-| T10     | T6, T7      | `frontend/tests/bdd/features/session.feature`                                                                               |
-| T11     | T6, T7      | `frontend/tests/bdd/features/games.feature`                                                                                 |
-| T12     | T6, T7      | `frontend/tests/bdd/features/games-current.feature`                                                                         |
-| T13     | T6, T7      | `frontend/tests/bdd/features/guesses.feature`                                                                               |
-| T14     | T6, T7      | `frontend/tests/bdd/features/history.feature`                                                                               |
-| T15     | T6, T7, T8  | `frontend/tests/bdd/features/play-round.feature`                                                                            |
-| T16     | T6, T7, T8  | `frontend/tests/bdd/features/loss-resets-streak.feature`                                                                    |
-| T17     | T6, T7, T8  | `frontend/tests/bdd/features/forfeit.feature`                                                                               |
-| T18     | T6, T7, T8  | `frontend/tests/bdd/features/mid-game-reload.feature`                                                                       |
-| T19     | T6, T7, T8  | `frontend/tests/bdd/features/difficulty-levels.feature`                                                                     |
-| T20     | T15, T17    | (deletions only — `frontend/tests/e2e/specs/play-round.spec.ts`, `no-forfeit-terminal.spec.ts`)                             |
-| T21     | —           | `.claude/rules/testing.md`                                                                                                  |
-| T22     | T3          | `README.md`                                                                                                                 |
-| T23     | T9-T19, T20 | `CONTINUITY.md` (no code writes — this is the acceptance gate)                                                              |
+| Task ID | Depends on  | Writes (concrete file paths)                                                                                                 |
+| ------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| T1      | —           | `backend/words.test.txt`, `backend/tests/unit/test_words_file_env.py`, `backend/src/hangman/main.py`                         |
+| T2      | —           | `frontend/package.json`, `frontend/pnpm-lock.yaml`, `frontend/cucumber.cjs`, `frontend/tests/bdd/**/.gitkeep`, `.gitignore`  |
+| T3      | T1, T2      | `Makefile`                                                                                                                   |
+| T4      | T2          | `frontend/tests/bdd/support/world.ts`                                                                                        |
+| T5      | T4          | `frontend/tests/bdd/support/hooks.ts`                                                                                        |
+| T6      | T5          | `frontend/tests/bdd/steps/shared.ts`                                                                                         |
+| T7      | T5          | `frontend/tests/bdd/steps/api.ts`                                                                                            |
+| T8      | T5          | `frontend/tests/bdd/steps/ui.ts` (no component edits — all testids verified present on master 2026-04-23; see Task 8 Step 3) |
+| T9      | T6, T7      | `frontend/tests/bdd/features/categories.feature`                                                                             |
+| T10     | T6, T7      | `frontend/tests/bdd/features/session.feature`                                                                                |
+| T11     | T6, T7      | `frontend/tests/bdd/features/games.feature`                                                                                  |
+| T12     | T6, T7      | `frontend/tests/bdd/features/games-current.feature`                                                                          |
+| T13     | T6, T7      | `frontend/tests/bdd/features/guesses.feature`                                                                                |
+| T14     | T6, T7      | `frontend/tests/bdd/features/history.feature`                                                                                |
+| T15     | T6, T7, T8  | `frontend/tests/bdd/features/play-round.feature`                                                                             |
+| T16     | T6, T7, T8  | `frontend/tests/bdd/features/loss-resets-streak.feature`                                                                     |
+| T17     | T6, T7, T8  | `frontend/tests/bdd/features/forfeit.feature`                                                                                |
+| T18     | T6, T7, T8  | `frontend/tests/bdd/features/mid-game-reload.feature`                                                                        |
+| T19     | T6, T7, T8  | `frontend/tests/bdd/features/difficulty-levels.feature`                                                                      |
+| T20     | T15, T17    | (deletions only — `frontend/tests/e2e/specs/play-round.spec.ts`, `no-forfeit-terminal.spec.ts`)                              |
+| T21     | —           | `.claude/rules/testing.md`                                                                                                   |
+| T22     | T3          | `README.md`                                                                                                                  |
+| T23     | T9-T19, T20 | `CONTINUITY.md` (no code writes — this is the acceptance gate)                                                               |
 
 **Concurrency cap:** 3 (practitioner default). Tasks T9–T14 (API-only feature files) can run as a wave of up to 3 after T6+T7 complete. T15–T19 (UI feature files) can run as a wave after T8 completes. T20/T21 are independent of each other and the features. T22 depends only on T3.
 
