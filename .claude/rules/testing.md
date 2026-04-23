@@ -139,6 +139,19 @@ There is **one** gated marker name. The Stop hook (`check-workflow-gates.sh`/`.p
 
 Changing any of these strings in one place requires updating the hook + tests in the same PR. The `test-contracts.sh` cross-file contract asserts this.
 
+## BDD suite vocabulary (additive, 2026-04-23 — Feature bdd-suite)
+
+The BDD suite adds a second gate marker alongside `E2E verified`. **Not hook-enforced in Feature 1** — manual checklist only. Feature 2 (`bdd-dashboard`) will add hook enforcement once there's a dashboard artifact to evidence against.
+
+| Gate element     | Canonical form                                      |
+| ---------------- | --------------------------------------------------- |
+| Marker stem      | `BDD suite passed`                                  |
+| Checklist entry  | ``- [ ] BDD suite passed (Phase 5.4 — `make bdd`)`` |
+| Checked (passed) | ``- [x] BDD suite passed (Phase 5.4 — `make bdd`)`` |
+| Checked as N/A   | `- [x] BDD suite passed — N/A: <reason>`            |
+
+**Scope in Feature 1:** documentation only. `check-workflow-gates.sh` / `.ps1` are NOT modified. PR reviewers enforce the marker by inspection.
+
 ### Evidence-based gate
 
 The `check-workflow-gates.sh`/`.ps1` hook does TWO checks on the `E2E verified` marker:
