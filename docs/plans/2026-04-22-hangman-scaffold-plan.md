@@ -4780,6 +4780,32 @@ All use cases run against the Hangman fullstack app: API on :8000, UI on :3000 v
 
 **Persistence:** 8. Reload the page. New game state is retained (`GET /games/current` returns the new game), history shows the forfeited one.
 
+### UC3b — Terminal game → start new → NO forfeit confirm (covers US-005 inverse, added 2026-04-23 after user playtest)
+
+**Interface:** UI
+
+**Intent:** When the current game is terminal (WON or LOST), starting a new one must NOT show the forfeit confirmation — there's nothing to forfeit. PRD US-005 AC scopes the confirm to IN_PROGRESS games only. This UC exists because the original UC3 only covers the IN_PROGRESS path, so a regression in the frontend's "is this game forfeitable?" check would slip through.
+
+**Setup:**
+
+1. Start a game via UI (defaults OK: animals/easy).
+2. Play through to a terminal state — either guess letters until you win, or guess 8 wrong letters to lose. (Losing is faster — click `q`, `x`, `z`, `j`, `v`, `w`, `k`, `y` on the keyboard.)
+3. Verify the terminal banner appears: `data-testid="game-won"` or `data-testid="game-lost"`.
+
+**Steps:**
+
+4. With the terminal banner still visible on screen, click the `data-testid="start-game-btn"` button (with the same or different category/difficulty — doesn't matter).
+5. **Hook `window.confirm`** before the click (Playwright: `page.on('dialog', ...)`) to detect whether a confirm dialog fires.
+
+**Verification:**
+
+6. No `window.confirm` dialog fires. The dialog handler count is zero.
+7. A new game appears: `data-testid="game-board"` visible with a fresh masked word; terminal banner is gone.
+8. `GET /api/v1/games/current` returns 200 with the new game (IN_PROGRESS).
+9. `GET /api/v1/history` still contains the terminal game from step 2 (and nothing else new — there's no "forfeited" ghost game).
+
+**Persistence:** Reload — new game state survives; history unchanged from step 9.
+
 ### UC4 — Mid-game reload persists IN_PROGRESS state (covers US-004)
 
 **Interface:** UI

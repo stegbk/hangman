@@ -62,7 +62,11 @@ export default function App() {
 
   const onStartGame = useCallback(
     async (category: string, difficulty: Difficulty) => {
-      if (currentGame !== null) {
+      // Only confirm forfeit when the current game is genuinely active.
+      // A terminal (WON/LOST) game is still in state so we can render the
+      // banner, but starting a new one doesn't forfeit anything — PRD US-005
+      // scopes the confirm to IN_PROGRESS games only.
+      if (currentGame !== null && currentGame.state === 'IN_PROGRESS') {
         const ok = window.confirm(
           'You have an active game. Starting a new one will forfeit it. Continue?',
         );
