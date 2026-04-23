@@ -1,5 +1,6 @@
 """FastAPI app assembly + lifespan."""
 
+import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -16,7 +17,11 @@ from hangman.words import load_words
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     Base.metadata.create_all(engine)
-    words_path = Path(__file__).resolve().parent.parent.parent / "words.txt"
+    backend_root = Path(__file__).resolve().parent.parent.parent
+    override = os.environ.get("HANGMAN_WORDS_FILE")
+    words_path = Path(override) if override else backend_root / "words.txt"
+    if not words_path.is_absolute():
+        words_path = (backend_root / words_path).resolve()
     app.state.word_pool = load_words(words_path)
     yield
 

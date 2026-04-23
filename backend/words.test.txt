@@ -1,0 +1,9 @@
+# BDD test-mode word pool. Loaded when HANGMAN_WORDS_FILE points at this file.
+#
+# Category names match production (animals/food/tech) so scenarios that assert
+# the category list keep passing. Contents collapse to one word ("cat") so:
+#   WIN  -> guess c, a, t (3 correct, 0 mistakes, difficulty-invariant)
+#   LOSS -> guess any 4/6/8 letters NOT in "cat" (hard/medium/easy lives_total)
+animals,cat
+food,cat
+tech,cat
