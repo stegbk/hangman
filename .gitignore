@@ -29,3 +29,4 @@ backend/hangman.db
 .env.*
 !.env.example
 backend/tmp_*.db
+backend/hangman.test.db*
