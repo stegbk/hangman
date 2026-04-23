@@ -1243,7 +1243,7 @@ git add frontend/tests/bdd/steps/ui.ts
 git add frontend/src/components/
 git commit -m "feat(bdd): UI step definitions
 
-15 step registrations against stable data-testid/role selectors. The
+14 step registrations against stable data-testid/role selectors. The
 'click keyboard letter' step encodes the Phase-5.1 guessPending sync
 barrier (toBeEnabled before click, toBeDisabled after) so sequential
 letter clicks don't race the in-flight /guesses POST. All selectors

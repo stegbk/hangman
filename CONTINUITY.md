@@ -59,7 +59,7 @@ Ready for the next feature. Candidates: visual polish (SVG hangman + animations)
 - [x] Contrarian gate passed — VALIDATE (Codex auto-trigger confirmed default wins; research brief + PRD Q1/Q17 pre-resolved the design space)
 - [x] Council verdict (if triggered): N/A (gate VALIDATED — no council fired)
 - [x] Plan written (`docs/plans/2026-04-23-bdd-suite-plan.md` — 23 tasks, Gherkin inline, dispatch plan filled, self-reviewed)
-- [ ] Plan review loop (4 iterations so far — iter-1: 12 P0/P1/P2 on API/testid/score/dialog; iter-2: 4 P1/P2 on masked-word UI format + tag mutex + step-def fold-in; iter-3: 2 P2 doc-drift; iter-4: 2 P2 residual doc-drift (Task 7 commit message count + dead ui.ts step); iter-5 stamp pending)
+- [ ] Plan review loop (5 iterations so far — iter-1: 12 blockers (API/testid/score/dialog); iter-2: 4 blockers (masked-word + mutex + fold-in); iter-3: 2 doc-drift; iter-4: 2 doc-drift; iter-5: 1 residual count-drift (Task 8 commit body 15→14). Both reviewers converged on same final finding; fix applied in eb7a969 amend. iter-6 stamp pending)
 - [ ] TDD execution complete
 - [ ] Code review loop (0 iterations) — iterate until no P0/P1/P2
 - [ ] Simplified
