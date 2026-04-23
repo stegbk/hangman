@@ -40,11 +40,11 @@ Ready for the next feature. Candidates: visual polish (SVG hangman + animations)
 > The PreToolUse hook blocks commit/push/PR if quality gates are incomplete.
 > Delete this section when no workflow is active (or set Command to `none`).
 
-| Field     | Value                                                                |
-| --------- | -------------------------------------------------------------------- |
-| Command   | /new-feature bdd-suite                                               |
-| Phase     | 3 — Design                                                           |
-| Next step | Plan review loop iter-2 (re-run Claude + Codex against revised plan) |
+| Field     | Value                                                                                |
+| --------- | ------------------------------------------------------------------------------------ |
+| Command   | /new-feature bdd-suite                                                               |
+| Phase     | 3 — Design                                                                           |
+| Next step | Phase 4 — dispatch subagent-driven-development to execute Task 1 of the 23-task plan |
 
 ### Checklist
 
@@ -59,7 +59,7 @@ Ready for the next feature. Candidates: visual polish (SVG hangman + animations)
 - [x] Contrarian gate passed — VALIDATE (Codex auto-trigger confirmed default wins; research brief + PRD Q1/Q17 pre-resolved the design space)
 - [x] Council verdict (if triggered): N/A (gate VALIDATED — no council fired)
 - [x] Plan written (`docs/plans/2026-04-23-bdd-suite-plan.md` — 23 tasks, Gherkin inline, dispatch plan filled, self-reviewed)
-- [ ] Plan review loop (5 iterations so far — iter-1: 12 blockers (API/testid/score/dialog); iter-2: 4 blockers (masked-word + mutex + fold-in); iter-3: 2 doc-drift; iter-4: 2 doc-drift; iter-5: 1 residual count-drift (Task 8 commit body 15→14). Both reviewers converged on same final finding; fix applied in eb7a969 amend. iter-6 stamp pending)
+- [x] Plan review loop (6 iterations — PASS) — iter-1: 12 blockers on API-shape/error-code/testid/score/dialog mismatches; iter-2: 4 on masked-word UI format + tag-mutex + step-def fold-in; iter-3: 2 doc-drift; iter-4: 2 doc-drift + dead-step removal; iter-5: 1 residual count-drift; iter-6: **BOTH reviewers PLAN CLEAN** (`fac654b`).
 - [ ] TDD execution complete
 - [ ] Code review loop (0 iterations) — iterate until no P0/P1/P2
 - [ ] Simplified
