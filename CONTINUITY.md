@@ -33,6 +33,50 @@ Ready for the next feature. Candidates: visual polish (SVG hangman + animations)
 
 ---
 
+## Workflow
+
+> Updated automatically by `/new-feature` and `/fix-bug` commands.
+> The Stop hook reminds you of the current phase on every response.
+> The PreToolUse hook blocks commit/push/PR if quality gates are incomplete.
+> Delete this section when no workflow is active (or set Command to `none`).
+
+| Field     | Value                     |
+| --------- | ------------------------- |
+| Command   | /new-feature bdd-suite    |
+| Phase     | 3 — Design                |
+| Next step | Write implementation plan |
+
+### Checklist
+
+- [x] Worktree created (`.worktrees/bdd-suite` on feat/bdd-suite, base 40d18f5)
+- [x] Project state read
+- [x] Plugins verified (superpowers + pr-review-toolkit + prd:discuss/create in skill list)
+- [x] PRD created (`docs/prds/bdd-suite.md` v1.1 — post-research corrections: tsx not ts-node, json+ndjson dual output, Node ≥20 engines pin)
+- [x] Research artifact produced (`docs/research/2026-04-23-bdd-suite.md` — 10 library sections, gate passed; 3 load-bearing findings patched into PRD v1.1)
+- [x] Design guidance loaded — N/A (BDD is test infrastructure; no user-facing UI surface)
+- [x] Brainstorming complete (`docs/plans/2026-04-23-bdd-suite-design.md` — 10 sections, approved by KC; Option A test-mode pool added on 2026-04-23 to unlock per-difficulty UI determinism)
+- [x] Approach comparison filled (single-viable architecture; sub-variations resolved: browser lifecycle A + gate automation A)
+- [x] Contrarian gate passed — VALIDATE (Codex auto-trigger confirmed default wins; research brief + PRD Q1/Q17 pre-resolved the design space)
+- [x] Council verdict (if triggered): N/A (gate VALIDATED — no council fired)
+- [ ] Plan written
+- [ ] Plan review loop (0 iterations) — iterate until no P0/P1/P2
+- [ ] TDD execution complete
+- [ ] Code review loop (0 iterations) — iterate until no P0/P1/P2
+- [ ] Simplified
+- [ ] Verified (tests/lint/types)
+- [ ] E2E use cases designed (Phase 3.2b)
+- [ ] E2E verified via verify-e2e agent (Phase 5.4)
+- [ ] E2E regression passed (Phase 5.4b)
+- [ ] E2E use cases graduated to tests/e2e/use-cases/ (Phase 6.2b)
+- [ ] E2E specs graduated to tests/e2e/specs/ (Phase 6.2c — if Playwright framework installed)
+- [ ] Learnings documented (if any)
+- [ ] State files updated
+- [ ] Committed and pushed
+- [ ] PR created
+- [ ] PR reviews addressed
+- [ ] Branch finished
+
+---
 
 ## Open Questions
 
