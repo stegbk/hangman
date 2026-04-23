@@ -21,11 +21,15 @@ test.describe('Hangman scaffold — forfeit-confirm scoping (UC3b)', () => {
     await expect(page.getByTestId('game-board')).toBeVisible();
     await expect(page.getByTestId('lives-remaining')).toContainText('4');
 
-    // j, q, x, z — none of these letters appear in any animal seed word
+    // j, v, x, z — none of these letters appear in any animal seed word
     // (cat, dog, elephant, giraffe, octopus, penguin, dolphin, kangaroo,
     //  rabbit, squirrel, butterfly, hippopotamus, crocodile, chameleon, flamingo).
+    // NOTE: 'q' was removed from this set after iter-2 review caught that
+    // 'squirrel' contains 'q' — if the random word was squirrel, the 'q' click
+    // would have been a correct guess, leaving hard mode with only 3 wrong
+    // guesses and no terminal transition.
     // 4 misses exhausts hard-mode lives → guaranteed LOST state.
-    const wrongLetters = ['j', 'q', 'x', 'z'];
+    const wrongLetters = ['j', 'v', 'x', 'z'];
     const terminalBanner = page.getByTestId('game-won').or(page.getByTestId('game-lost'));
     for (const letter of wrongLetters) {
       if ((await terminalBanner.count()) > 0) break;
