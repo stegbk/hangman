@@ -146,7 +146,7 @@ Then('the response body field {string} is absent', function (this: HangmanWorld,
 });
 
 Then(
-  'the Set-Cookie header contains (case-insensitive) {string}',
+  'the Set-Cookie header contains \\(case-insensitive) {string}',
   function (this: HangmanWorld, needle: string) {
     if (!this.lastApiResponse) throw new Error('No API response recorded');
     const headers = this.lastApiResponse.headers();
