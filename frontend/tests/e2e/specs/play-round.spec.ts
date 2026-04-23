@@ -27,15 +27,23 @@ test.describe('Hangman scaffold — end-to-end wiring', () => {
     const letters = ['e', 'a', 'o', 'i', 'u', 't', 'n', 'r', 's', 'l', 'c', 'd', 'h', 'p', 'm'];
     for (const letter of letters) {
       // Check terminal FIRST — after a terminal transition all keyboard
-      // buttons disable, which would hang a subsequent click waiting for "enabled".
+      // buttons disable and we must NOT try to click again.
       if ((await terminalBanner.count()) > 0) break;
       const btn = page.getByTestId(`keyboard-letter-${letter}`);
-      if (await btn.isDisabled()) continue;
+      // Wait up to 3s for the button to become enabled. `guessPending` in
+      // App.tsx disables the whole keyboard during each in-flight guess;
+      // toBeEnabled() auto-retries and succeeds once the fetch settles. If
+      // the letter is already in `guessed_letters`, the wait times out and
+      // we skip.
+      try {
+        await expect(btn).toBeEnabled({ timeout: 3000 });
+      } catch {
+        continue;
+      }
       await btn.click();
-      // Wait for the onGuess round-trip + React re-render to settle. The
-      // clicked button becomes disabled once the letter is in guessed_letters,
-      // which is a natural sync barrier — avoids races where the NEXT
-      // iteration checks isDisabled() before the current guess flushed.
+      // Sync barrier: the clicked button becomes disabled once the letter
+      // is in guessed_letters (terminal state or guessPending). Either way
+      // the NEXT iteration's toBeEnabled() will correctly handle the retry.
       await expect(btn).toBeDisabled();
     }
 

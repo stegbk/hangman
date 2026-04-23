@@ -30,7 +30,14 @@ test.describe('Hangman scaffold — forfeit-confirm scoping (UC3b)', () => {
     for (const letter of wrongLetters) {
       if ((await terminalBanner.count()) > 0) break;
       const btn = page.getByTestId(`keyboard-letter-${letter}`);
-      if (await btn.isDisabled()) continue;
+      // App.tsx's guessPending state disables the whole keyboard during
+      // each in-flight guess. Wait for the button to become enabled rather
+      // than skipping on disabled — the latter races with guessPending.
+      try {
+        await expect(btn).toBeEnabled({ timeout: 3000 });
+      } catch {
+        continue;
+      }
       await btn.click();
       await expect(btn).toBeDisabled();
     }
