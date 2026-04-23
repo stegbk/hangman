@@ -40,11 +40,11 @@ Ready for the next feature. Candidates: visual polish (SVG hangman + animations)
 > The PreToolUse hook blocks commit/push/PR if quality gates are incomplete.
 > Delete this section when no workflow is active (or set Command to `none`).
 
-| Field     | Value                                                               |
-| --------- | ------------------------------------------------------------------- |
-| Command   | /new-feature bdd-suite                                              |
-| Phase     | 5 — Quality Gates                                                   |
-| Next step | Phase 6 — commit/push + open PR (no E2E — feature IS the E2E infra) |
+| Field     | Value                                     |
+| --------- | ----------------------------------------- |
+| Command   | /new-feature bdd-suite                    |
+| Phase     | 5 — Quality Gates                         |
+| Next step | Await PR #2 review, then `/finish-branch` |
 
 ### Checklist
 
@@ -71,9 +71,9 @@ Ready for the next feature. Candidates: visual polish (SVG hangman + animations)
 - [x] E2E specs graduated to tests/e2e/specs/ — N/A: scaffold's 2 Playwright specs DELETED (Task 20) since replaced by `.feature` equivalents; specs/ dir intentionally empty (playwright.config.ts preserved for Feature 3 reuse).
 - [ ] Learnings documented (if any)
 - [ ] State files updated
-- [ ] Committed and pushed
-- [ ] PR created
-- [ ] PR reviews addressed
+- [x] Committed and pushed (`git push -u origin feat/bdd-suite` — 36 commits on branch, HEAD `c43aaad`)
+- [x] PR created — https://github.com/stegbk/hangman/pull/2
+- [ ] PR reviews addressed (none yet — new PR)
 - [ ] Branch finished
 
 ---
