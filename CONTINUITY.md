@@ -20,61 +20,16 @@ A local HTTP hangman game with category picker, score/streak tracking, difficult
 
 ### Done (recent 2-3 only)
 
+- **BDD suite shipped (Feature 1 of 3)** — PR #2 merged to master via `a811d67` (2026-04-23). 37 commits, +5953/-173. Pure `@cucumber/cucumber` v12.8.1 + `playwright` 1.59 (library) + `tsx` 4.19. 33 scenarios / 287 steps across 11 `.feature` files covering every backend endpoint + 5 UI use cases (UC1–UC4 + per-difficulty WIN/LOSS). Backend gains `HANGMAN_WORDS_FILE` env-var support + `backend/words.test.txt` for determinism. Full workflow ceremony: PRD v1.2 + research brief + 11-section design + 23-task plan, **plan-review loop PASSED in 6 iterations**, subagent-driven TDD (3 subagents per task), /simplify (4 P2 fixes), **code-review loop PASSED in 2 iterations**. `make bdd` 33/33 / 10 smoke; `make verify` clean. 2 latent cucumber-js bugs caught + fixed in-flight (Cucumber Expression escape, `require:` hook-order).
 - **Hangman scaffold shipped** — PR #1 merged to master via `b09458c` (2026-04-23). 45 commits, +15k LOC. Backend (FastAPI + SQLAlchemy 2.0 + SQLite), frontend (React 19 + Vite 8 + TypeScript), Playwright E2E. Full workflow ceremony: PRD v1.2, research brief, design spec, 27-task plan, 3-iter plan-review loop, subagent-driven TDD, 3-iter code-review loop, /simplify, 2 Playwright smokes passing, `make verify` clean. Backend 172 tests / Frontend 28 tests / 2 E2E specs.
-- **Hook fix** (shipped with scaffold): `.claude/hooks/check-workflow-gates.sh` stopped gating local `git commit` — only `git push` / `gh pr create` are ship actions.
 
 ### Now
 
-No active feature. Scaffold is on master and playable locally via `make install && make backend && make frontend`.
+No active feature. Both scaffold + BDD suite on master. Playable locally via `make install && make backend && make frontend`; BDD via `make backend-test` + `make frontend` + `make bdd` (33/33 green).
 
 ### Next
 
-Ready for the next feature. Candidates: visual polish (SVG hangman + animations), more categories, additional difficulty tuning, session sweeper, leaderboard, multiplayer. Pick any via `/new-feature <name>`.
-
----
-
-## Workflow
-
-> Updated automatically by `/new-feature` and `/fix-bug` commands.
-> The Stop hook reminds you of the current phase on every response.
-> The PreToolUse hook blocks commit/push/PR if quality gates are incomplete.
-> Delete this section when no workflow is active (or set Command to `none`).
-
-| Field     | Value                                     |
-| --------- | ----------------------------------------- |
-| Command   | /new-feature bdd-suite                    |
-| Phase     | 5 — Quality Gates                         |
-| Next step | Await PR #2 review, then `/finish-branch` |
-
-### Checklist
-
-- [x] Worktree created (`.worktrees/bdd-suite` on feat/bdd-suite, base 40d18f5)
-- [x] Project state read
-- [x] Plugins verified (superpowers + pr-review-toolkit + prd:discuss/create in skill list)
-- [x] PRD created (`docs/prds/bdd-suite.md` v1.1 — post-research corrections: tsx not ts-node, json+ndjson dual output, Node ≥20 engines pin)
-- [x] Research artifact produced (`docs/research/2026-04-23-bdd-suite.md` — 10 library sections, gate passed; 3 load-bearing findings patched into PRD v1.1)
-- [x] Design guidance loaded — N/A (BDD is test infrastructure; no user-facing UI surface)
-- [x] Brainstorming complete (`docs/plans/2026-04-23-bdd-suite-design.md` — 10 sections, approved by KC; Option A test-mode pool added on 2026-04-23 to unlock per-difficulty UI determinism)
-- [x] Approach comparison filled (single-viable architecture; sub-variations resolved: browser lifecycle A + gate automation A)
-- [x] Contrarian gate passed — VALIDATE (Codex auto-trigger confirmed default wins; research brief + PRD Q1/Q17 pre-resolved the design space)
-- [x] Council verdict (if triggered): N/A (gate VALIDATED — no council fired)
-- [x] Plan written (`docs/plans/2026-04-23-bdd-suite-plan.md` — 23 tasks, Gherkin inline, dispatch plan filled, self-reviewed)
-- [x] Plan review loop (6 iterations — PASS) — iter-1: 12 blockers on API-shape/error-code/testid/score/dialog mismatches; iter-2: 4 on masked-word UI format + tag-mutex + step-def fold-in; iter-3: 2 doc-drift; iter-4: 2 doc-drift + dead-step removal; iter-5: 1 residual count-drift; iter-6: **BOTH reviewers PLAN CLEAN** (`fac654b`).
-- [x] TDD execution complete — all 23 tasks executed via subagent-driven-development (each w/ spec + code-quality review); 33 BDD scenarios authored, all green
-- [x] Code review loop (2 iterations — PASS) — iter-1: Codex + pr-review-toolkit in parallel flagged 6 P2s (test-integrity weaknesses: String() coercion, weak forfeit-chain assertion, vacuous difficulty check, CWD-relative test passes spuriously, dead @dialog-reject hook, currentGameId 0-tolerance); all fixed in `0bcfb80`. iter-2: BOTH reviewers PLAN CLEAN.
-- [x] Simplified (Phase 5.1 /simplify swept 3 parallel reviewers — reuse + quality + efficiency; 4 P2 fixes applied in `4a8f143`: BACKEND_ROOT extraction, rememberedSessionValue field, parallel reachability probes, service-lookup table. 1 P2 + several P3s skipped with rationale.)
-- [x] Verified (tests/lint/types) — `make verify` green: backend 191 pytest / frontend 28 vitest / ruff clean / eslint clean / tsc clean; `make bdd` 33/33 scenarios, 10/10 @smoke, JSON+NDJSON artifacts produced
-- [x] E2E use cases designed — N/A: Feature IS the E2E infrastructure; the 33 BDD scenarios in frontend/tests/bdd/features/ are its verification.
-- [x] E2E verified — N/A: Feature IS the E2E infrastructure; the 33 BDD scenarios in frontend/tests/bdd/features/ are its verification. `make bdd` 33/33 = feature verified.
-- [x] E2E regression passed — N/A: The scaffold's verify-e2e markdown UCs in `tests/e2e/use-cases/hangman-scaffold.md` are preserved and run green separately; the new BDD suite does not regress them (verified by deleting the 2 old Playwright specs in Task 20 without disturbing use-cases/).
-- [x] E2E use cases graduated to tests/e2e/use-cases/ — N/A: scaffold UC stays in place; BDD features live in a parallel tree at `tests/bdd/` per design spec.
-- [x] E2E specs graduated to tests/e2e/specs/ — N/A: scaffold's 2 Playwright specs DELETED (Task 20) since replaced by `.feature` equivalents; specs/ dir intentionally empty (playwright.config.ts preserved for Feature 3 reuse).
-- [ ] Learnings documented (if any)
-- [ ] State files updated
-- [x] Committed and pushed (`git push -u origin feat/bdd-suite` — 36 commits on branch, HEAD `c43aaad`)
-- [x] PR created — https://github.com/stegbk/hangman/pull/2
-- [ ] PR reviews addressed (none yet — new PR)
-- [ ] Branch finished
+Ready for **Feature 2: bdd-dashboard** (static analyzer + HTML generator matching `bdd_dashboard_example.html`) per the three-feature BDD plan. Or any other feature. Pick via `/new-feature <name>`.
 
 ---
 
