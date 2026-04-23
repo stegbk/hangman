@@ -1,5 +1,13 @@
 """Shared pytest fixtures for the backend test suite."""
 
+import os
+
+# Force the app's module-global engine to use in-memory SQLite BEFORE
+# hangman.db is imported. Without this, TestClient(app) triggers lifespan
+# which calls create_all on the real backend/hangman.db file (side effect
+# on every test run).
+os.environ.setdefault("HANGMAN_DB_URL", "sqlite:///:memory:")
+
 from collections.abc import Iterator
 
 import pytest

@@ -12,25 +12,34 @@ test.describe('Hangman scaffold — forfeit-confirm scoping (UC3b)', () => {
     });
 
     await page.goto('/');
+
+    // Select hard difficulty (4 lives) so 4 guaranteed misses produce LOST
+    // deterministically — avoids the ~20% flake where easy (8 lives) words
+    // like "squirrel" happen to contain one of the guessed rare letters.
+    await page.getByTestId('difficulty-hard').click();
     await page.getByTestId('start-game-btn').click();
     await expect(page.getByTestId('game-board')).toBeVisible();
+    await expect(page.getByTestId('lives-remaining')).toContainText('4');
 
-    // Guess rare letters — may land on WON or LOST depending on the word.
-    const wrongLetters = ['q', 'x', 'z', 'j', 'v', 'w', 'k', 'y'];
+    // j, q, x, z — none of these letters appear in any animal seed word
+    // (cat, dog, elephant, giraffe, octopus, penguin, dolphin, kangaroo,
+    //  rabbit, squirrel, butterfly, hippopotamus, crocodile, chameleon, flamingo).
+    // 4 misses exhausts hard-mode lives → guaranteed LOST state.
+    const wrongLetters = ['j', 'q', 'x', 'z'];
     const terminalBanner = page.getByTestId('game-won').or(page.getByTestId('game-lost'));
     for (const letter of wrongLetters) {
+      if ((await terminalBanner.count()) > 0) break;
       const btn = page.getByTestId(`keyboard-letter-${letter}`);
       if (await btn.isDisabled()) continue;
       await btn.click();
-      if ((await terminalBanner.count()) > 0) break;
+      await expect(btn).toBeDisabled();
     }
 
     // Auto-wait for terminal banner to render.
     await expect(terminalBanner).toBeVisible();
 
-    const wonVisible = await page.getByTestId('game-won').count();
-    const lostVisible = await page.getByTestId('game-lost').count();
-    expect(wonVisible + lostVisible).toBe(1);
+    // Hard + 4 guaranteed misses → always LOST (never coincidentally WON).
+    await expect(page.getByTestId('game-lost')).toBeVisible();
 
     // No dialog has fired yet.
     expect(dialogCount).toBe(0);
@@ -39,9 +48,9 @@ test.describe('Hangman scaffold — forfeit-confirm scoping (UC3b)', () => {
     // window.confirm (PRD US-005 scopes the prompt to IN_PROGRESS games only).
     await page.getByTestId('start-game-btn').click();
 
-    // Auto-wait for the NEW (mid-play) game to appear — lives-remaining back to 8
-    // and no terminal banner. Serves as synchronization point.
-    await expect(page.getByTestId('lives-remaining')).toContainText('8');
+    // Auto-wait for the NEW (mid-play) game to appear. Hard is still selected
+    // so the new game also has 4 lives. No terminal banner should be visible.
+    await expect(page.getByTestId('lives-remaining')).toContainText('4');
     await expect(page.getByTestId('game-won')).toHaveCount(0);
     await expect(page.getByTestId('game-lost')).toHaveCount(0);
 

@@ -21,3 +21,10 @@ def test_session_endpoint_is_idempotent(client) -> None:
     r1 = client.get("/api/v1/session")
     r2 = client.get("/api/v1/session")
     assert r1.json() == r2.json()
+
+
+def test_cookie_max_age_is_30_days() -> None:
+    """Locks the 30-day TTL contract from PRD US-004."""
+    from hangman.sessions import COOKIE_MAX_AGE
+
+    assert COOKIE_MAX_AGE == 30 * 24 * 60 * 60  # 2592000

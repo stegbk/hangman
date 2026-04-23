@@ -8,14 +8,16 @@ def _guess(client, game_id: int, letter: str):
     return client.post(f"/api/v1/games/{game_id}/guesses", json={"letter": letter})
 
 
-def test_correct_guess_reveals_letter(client) -> None:
-    game = _start_game(client)
-    # seed pool only has 'cat', 'dog', 'bird', 'fish'. Try guessing vowels until one reveals.
-    res = _guess(client, game["id"], "a")
+def test_correct_guess_reveals_letter_in_mask(client) -> None:
+    """Hermetic: test/cat — guess 'c' and verify mask + no lives lost."""
+    game = _start_game(client, category="test", difficulty="easy")
+    res = _guess(client, game["id"], "c")
     assert res.status_code == 200
     body = res.json()
-    # Either revealed (correct_reveal) or not — both are valid. If a reveal, masked_word has 'a'.
-    assert body["state"] in {"IN_PROGRESS", "WON", "LOST"}
+    assert body["masked_word"] == "c__"
+    assert body["wrong_guesses"] == 0
+    assert body["lives_remaining"] == 8
+    assert body["state"] == "IN_PROGRESS"
 
 
 def test_wrong_guess_decrements_lives(client) -> None:
