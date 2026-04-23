@@ -1,5 +1,13 @@
 .PHONY: install backend frontend test lint typecheck verify clean
 
+# Port overrides. Default to the canonical 8000 / 3000; override on the command
+# line when those are occupied (e.g. SSH tunnel on 8000):
+#   make backend HANGMAN_BACKEND_PORT=8002
+#   make frontend HANGMAN_BACKEND_PORT=8002 HANGMAN_FRONTEND_PORT=3001
+# vite.config.ts and playwright.config.ts read the same env vars.
+HANGMAN_BACKEND_PORT ?= 8000
+HANGMAN_FRONTEND_PORT ?= 3000
+
 install:
 	cd backend && uv sync
 	cd backend && uv pip install -e .
@@ -7,10 +15,10 @@ install:
 	cd frontend && pnpm exec playwright install chromium
 
 backend:
-	cd backend && uv run uvicorn hangman.main:app --reload --host 127.0.0.1 --port 8000
+	cd backend && uv run uvicorn hangman.main:app --reload --host 127.0.0.1 --port $(HANGMAN_BACKEND_PORT)
 
 frontend:
-	cd frontend && pnpm dev
+	cd frontend && HANGMAN_BACKEND_PORT=$(HANGMAN_BACKEND_PORT) HANGMAN_FRONTEND_PORT=$(HANGMAN_FRONTEND_PORT) pnpm dev
 
 test:
 	cd backend && uv run pytest
