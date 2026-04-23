@@ -6,6 +6,7 @@ from typing import Any
 from pydantic import BaseModel, Field, field_validator, model_serializer
 
 from hangman.game import DIFFICULTY_LIVES, Difficulty, GameState, mask_word
+from hangman.models import STATE_IN_PROGRESS
 
 # ---- Requests ----
 
@@ -67,7 +68,7 @@ class GameResponse(BaseModel):
     @model_serializer(mode="wrap")
     def _omit_word_in_progress(self, handler: Any) -> dict[str, Any]:
         data: dict[str, Any] = handler(self)
-        if self.state == "IN_PROGRESS":
+        if self.state == STATE_IN_PROGRESS:
             data.pop("word", None)
         return data
 
@@ -82,7 +83,7 @@ class GameResponse(BaseModel):
             **fields,
             masked_word=masked,
             lives_remaining=lives,
-            word=_word if state != "IN_PROGRESS" else None,
+            word=_word if state != STATE_IN_PROGRESS else None,
         )
 
 
@@ -93,8 +94,16 @@ class CreateGameResponse(GameResponse):
     def from_game_row(  # noqa: D102
         cls, *, _word: str, forfeited_game_id: int | None = None, **fields: Any
     ) -> "CreateGameResponse":
-        base = GameResponse.from_game_row(_word=_word, **fields).model_dump()
-        return cls(**base, forfeited_game_id=forfeited_game_id)
+        state = fields["state"]
+        masked = mask_word(_word, fields["guessed_letters"])
+        lives = fields["wrong_guesses_allowed"] - fields["wrong_guesses"]
+        return cls(
+            **fields,
+            masked_word=masked,
+            lives_remaining=lives,
+            word=_word if state != STATE_IN_PROGRESS else None,
+            forfeited_game_id=forfeited_game_id,
+        )
 
 
 class HistoryResponse(BaseModel):

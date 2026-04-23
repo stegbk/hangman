@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { Difficulty, DifficultyOption } from '../types';
 
 interface CategoryPickerProps {
@@ -19,10 +19,13 @@ export function CategoryPicker({
     (difficulties[0]?.id ?? 'easy') as Difficulty,
   );
 
-  // Keep selections valid if props change.
-  if (categories.length > 0 && !categories.includes(category)) {
-    setCategory(categories[0]);
-  }
+  // Keep selections valid if props change. Wrapped in useEffect to avoid
+  // calling setState synchronously in the render body (React StrictMode warns).
+  useEffect(() => {
+    if (categories.length > 0 && !categories.includes(category)) {
+      setCategory(categories[0]);
+    }
+  }, [categories, category]);
 
   return (
     <div data-testid="category-picker" role="region" aria-label="Category picker">

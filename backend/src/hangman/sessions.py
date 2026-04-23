@@ -1,14 +1,13 @@
 """Session cookie dependency — hand-rolled, not Starlette SessionMiddleware."""
 
 import logging
-from datetime import UTC, datetime
 from uuid import uuid4
 
 from fastapi import Depends, Request, Response
 from sqlalchemy.orm import Session as OrmSession
 
 from hangman.db import get_session
-from hangman.models import Session
+from hangman.models import Session, _now_utc
 
 COOKIE_NAME = "session_id"
 COOKIE_MAX_AGE = 30 * 24 * 60 * 60  # 30 days
@@ -31,7 +30,7 @@ def get_or_create_session(
         session = Session(id=str(uuid4()))
         db.add(session)
         db.flush()
-    session.updated_at = datetime.now(UTC)
+    session.updated_at = _now_utc()
 
     response.set_cookie(
         key=COOKIE_NAME,

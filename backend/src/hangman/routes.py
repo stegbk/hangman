@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
 from typing import cast
 
 from fastapi import APIRouter, Depends, Request, Response, status
@@ -20,7 +19,7 @@ from hangman.game import (
     apply_guess,
     compute_round_score,
 )
-from hangman.models import STATE_IN_PROGRESS, STATE_LOST, STATE_WON, Game, Session
+from hangman.models import STATE_IN_PROGRESS, STATE_LOST, STATE_WON, Game, Session, _now_utc
 from hangman.schemas import (
     CategoriesResponse,
     CreateGameResponse,
@@ -41,10 +40,6 @@ router = APIRouter(prefix="/api/v1")
 
 def _word_pool(request: Request) -> WordPool:
     return cast(WordPool, request.app.state.word_pool)  # populated in main.lifespan
-
-
-def _now_utc() -> datetime:
-    return datetime.now(UTC)
 
 
 def _game_to_response(g: Game) -> GameResponse:

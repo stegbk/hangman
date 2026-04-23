@@ -7,6 +7,10 @@ interface GameBoardProps {
 
 const MAX_STAGE = 8;
 
+// Mirrors backend game.py::figure_stage(wrong, allowed).
+// MAX_STAGE must stay in sync with backend MAX_FIGURE_STAGE.
+// If the backend ever exposes a precomputed `figure_stage` field on
+// GameDTO, this helper + MAX_STAGE can be deleted.
 function computeStage(g: GameDTO): number {
   const start = MAX_STAGE - g.wrong_guesses_allowed;
   return start + g.wrong_guesses;
