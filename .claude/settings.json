@@ -1,9 +1,4 @@
 {
-  "enabledPlugins": {
-    "superpowers@superpowers-marketplace": true,
-    "pr-review-toolkit@claude-plugins-official": true,
-    "frontend-design@claude-plugins-official": true
-  },
   "permissions": {
     "allow": [
       "Read",
@@ -63,8 +58,8 @@
         "hooks": [
           {
             "type": "prompt",
-            "model": "sonnet",
-            "prompt": "Evaluate the subagent's output quality. Consider:\n1. Did the subagent complete its assigned task?\n2. Is the output useful and actionable?\n3. Were there any errors or issues?\n\nYou MUST respond with ONLY a JSON object in one of these formats:\n{\"ok\": true} - if the subagent completed successfully\n{\"ok\": false, \"reason\": \"explanation of what went wrong\"} - if issues were found\n\nRespond with ONLY the JSON object, no other text."
+            "prompt": "Evaluate the subagent's output quality. Consider:\n1. Did the subagent complete its assigned task?\n2. Is the output useful and actionable?\n3. Were there any errors or issues?\n\nYou MUST respond with ONLY a JSON object in one of these formats:\n{\"ok\": true} - if the subagent completed successfully\n{\"ok\": false, \"reason\": \"explanation of what went wrong\"} - if issues were found\n\nRespond with ONLY the JSON object, no other text.",
+            "model": "sonnet"
           }
         ]
       }
@@ -122,5 +117,11 @@
         ]
       }
     ]
+  },
+  "enabledPlugins": {
+    "superpowers@superpowers-marketplace": true,
+    "pr-review-toolkit@claude-plugins-official": true,
+    "frontend-design@claude-plugins-official": true,
+    "superpowers@claude-plugins-official": true
   }
 }
