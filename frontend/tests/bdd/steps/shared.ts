@@ -61,9 +61,11 @@ Before({ tags: '@dialog-reject' }, async function (this: HangmanWorld) {
 });
 
 Before({ tags: '@dialog-tracked' }, async function (this: HangmanWorld) {
-  this.page.on('dialog', async (_dialog) => {
+  // Shorter callback arity — we deliberately don't handle the dialog; just
+  // count it. Playwright invokes the handler with the dialog argument, but
+  // the callback is free to accept fewer parameters.
+  this.page.on('dialog', async () => {
     this.dialogCount += 1;
-    // Deliberately unhandled — see module-level comment.
   });
 });
 

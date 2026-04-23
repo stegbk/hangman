@@ -40,11 +40,11 @@ Ready for the next feature. Candidates: visual polish (SVG hangman + animations)
 > The PreToolUse hook blocks commit/push/PR if quality gates are incomplete.
 > Delete this section when no workflow is active (or set Command to `none`).
 
-| Field     | Value                                                                                |
-| --------- | ------------------------------------------------------------------------------------ |
-| Command   | /new-feature bdd-suite                                                               |
-| Phase     | 3 — Design                                                                           |
-| Next step | Phase 4 — dispatch subagent-driven-development to execute Task 1 of the 23-task plan |
+| Field     | Value                                                                       |
+| --------- | --------------------------------------------------------------------------- |
+| Command   | /new-feature bdd-suite                                                      |
+| Phase     | 5 — Quality Gates                                                           |
+| Next step | Phase 5.4 — verify-e2e / BDD acceptance review; advance to code-review loop |
 
 ### Checklist
 
@@ -60,10 +60,10 @@ Ready for the next feature. Candidates: visual polish (SVG hangman + animations)
 - [x] Council verdict (if triggered): N/A (gate VALIDATED — no council fired)
 - [x] Plan written (`docs/plans/2026-04-23-bdd-suite-plan.md` — 23 tasks, Gherkin inline, dispatch plan filled, self-reviewed)
 - [x] Plan review loop (6 iterations — PASS) — iter-1: 12 blockers on API-shape/error-code/testid/score/dialog mismatches; iter-2: 4 on masked-word UI format + tag-mutex + step-def fold-in; iter-3: 2 doc-drift; iter-4: 2 doc-drift + dead-step removal; iter-5: 1 residual count-drift; iter-6: **BOTH reviewers PLAN CLEAN** (`fac654b`).
-- [ ] TDD execution complete
-- [ ] Code review loop (0 iterations) — iterate until no P0/P1/P2
+- [x] TDD execution complete — all 23 tasks executed via subagent-driven-development (each w/ spec + code-quality review); 33 BDD scenarios authored, all green
+- [ ] Code review loop (0 iterations) — iterate until no P0/P1/P2 (Phase 5 next)
 - [ ] Simplified
-- [ ] Verified (tests/lint/types)
+- [x] Verified (tests/lint/types) — `make verify` green: backend 191 pytest / frontend 28 vitest / ruff clean / eslint clean / tsc clean; `make bdd` 33/33 scenarios, 10/10 @smoke, JSON+NDJSON artifacts produced
 - [ ] E2E use cases designed (Phase 3.2b)
 - [ ] E2E verified via verify-e2e agent (Phase 5.4)
 - [ ] E2E regression passed (Phase 5.4b)
