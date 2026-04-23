@@ -5,12 +5,40 @@ import { GameBoard } from './components/GameBoard';
 import { HistoryList } from './components/HistoryList';
 import { Keyboard } from './components/Keyboard';
 import { ScorePanel } from './components/ScorePanel';
-import type { CategoriesDTO, Difficulty, DifficultyOption, GameDTO, SessionDTO } from './types';
+import type { Difficulty, DifficultyOption, GameDTO, SessionDTO } from './types';
 
 function humanError(e: unknown): string {
-  if (e instanceof ApiError) return e.message;
+  if (e instanceof ApiError) {
+    switch (e.code) {
+      case 'NO_ACTIVE_GAME':
+        return 'No game in progress — start a new one.';
+      case 'GAME_ALREADY_FINISHED':
+        return 'This game has already ended.';
+      case 'ALREADY_GUESSED':
+        return "You've already guessed that letter.";
+      case 'INVALID_LETTER':
+        return 'Please guess a single letter a–z.';
+      case 'UNKNOWN_CATEGORY':
+        return 'That category is not available — pick another.';
+      case 'GAME_NOT_FOUND':
+        return 'That game no longer exists.';
+      case 'CONCURRENT_START':
+        return 'Another game was started simultaneously — please retry.';
+      case 'VALIDATION_ERROR':
+        return 'That input looks invalid — please check and retry.';
+      case 'INTERNAL_ERROR': {
+        const rid = e.body?.error?.request_id;
+        return `Something went wrong on our end${rid ? ` (ref ${rid})` : ''}. Please try again.`;
+      }
+      default:
+        return e.message || `Request failed (HTTP ${e.status}).`;
+    }
+  }
+  if (e instanceof TypeError && /fetch/i.test(e.message)) {
+    return 'Network error — check your connection and try again.';
+  }
   if (e instanceof Error) return e.message;
-  return 'Unknown error';
+  return 'Unknown error. Please refresh and try again.';
 }
 
 export default function App() {
@@ -21,6 +49,7 @@ export default function App() {
   const [history, setHistory] = useState<GameDTO[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+  const [guessPending, setGuessPending] = useState<boolean>(false);
 
   const refreshSessionAndHistory = useCallback(async () => {
     const [s, h] = await Promise.all([api.getSession(), api.getHistory()]);
@@ -32,13 +61,11 @@ export default function App() {
     let cancelled = false;
     (async () => {
       try {
-        const [cats, sess, cur, hist]: [
-          CategoriesDTO,
-          SessionDTO,
-          GameDTO | null,
-          { items: GameDTO[] },
-        ] = await Promise.all([
-          api.getCategories(),
+        // Sequential: categories first so the session cookie is set before
+        // concurrent requests fire — avoids creating multiple orphan sessions.
+        const cats = await api.getCategories();
+        if (cancelled) return;
+        const [sess, cur, hist] = await Promise.all([
           api.getSession(),
           api.getCurrentGame(),
           api.getHistory(),
@@ -89,8 +116,9 @@ export default function App() {
 
   const onGuess = useCallback(
     async (letter: string) => {
-      if (currentGame === null) return;
+      if (currentGame === null || guessPending) return;
       setError(null);
+      setGuessPending(true);
       try {
         const updated = await api.guess(currentGame.id, letter);
         setCurrentGame(updated);
@@ -99,9 +127,11 @@ export default function App() {
         }
       } catch (e) {
         setError(humanError(e));
+      } finally {
+        setGuessPending(false);
       }
     },
-    [currentGame, refreshSessionAndHistory],
+    [currentGame, guessPending, refreshSessionAndHistory],
   );
 
   const dismissError = useCallback(() => setError(null), []);
@@ -126,7 +156,9 @@ export default function App() {
       <GameBoard game={currentGame} />
       <Keyboard
         guessedLetters={currentGame?.guessed_letters ?? ''}
-        disabled={loading || currentGame === null || currentGame.state !== 'IN_PROGRESS'}
+        disabled={
+          loading || guessPending || currentGame === null || currentGame.state !== 'IN_PROGRESS'
+        }
         onGuess={onGuess}
       />
       <HistoryList games={history} />

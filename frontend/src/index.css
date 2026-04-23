@@ -48,6 +48,18 @@ body,
   flex-direction: column;
 }
 
+[data-testid='score-panel'] dt {
+  font-size: 0.8rem;
+  color: #666;
+  margin: 0;
+}
+
+[data-testid='score-panel'] dd {
+  font-size: 1.4rem;
+  margin: 0;
+  font-weight: 600;
+}
+
 [data-testid="category-picker"] {
   display: flex;
   flex-direction: column;
