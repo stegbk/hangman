@@ -47,9 +47,9 @@ frontend/
     │   ├── mid-game-reload.feature
     │   └── difficulty-levels.feature
     ├── steps/
-    │   ├── api.ts                           # 12 API step registrations
+    │   ├── api.ts                           # 14 API step registrations (incl. cookie helpers)
     │   ├── ui.ts                            # 15 UI step registrations
-    │   └── shared.ts                        # 1 no-op + @dialog-tracked Before hook
+    │   └── shared.ts                        # 1 no-op Given + 4 dialog Before hooks (accept/reject/tracked/mutex-guard) + 2 dialog Then steps
     └── support/
         ├── world.ts                         # HangmanWorld custom World class
         └── hooks.ts                         # BeforeAll/Before/After/AfterAll
@@ -689,10 +689,12 @@ Expected: no errors.
 git add frontend/tests/bdd/support/hooks.ts
 git commit -m "feat(bdd): browser-lifecycle hooks
 
-- BeforeAll/AfterAll own the shared chromium browser.
-- Before/After create fresh context+page+apiRequest per scenario.
-- assertBackendReachable fires once per scenario — trades ~50ms for a
-  clear 'did you run make backend-test?' error on ECONNREFUSED.
+- BeforeAll launches the shared chromium browser and probes backend
+  AND frontend reachability once (fails fast with 'did you run make
+  backend-test / make frontend?' on ECONNREFUSED).
+- AfterAll closes the browser.
+- Before/After create and dispose fresh context+page+apiRequest per
+  scenario for cookie isolation.
 - Failure screenshots auto-attach to the cucumber NDJSON stream."
 ```
 
@@ -813,7 +815,7 @@ git commit -m "feat(bdd): shared documentation step + @dialog-tracked hook
 
 - Create: `frontend/tests/bdd/steps/api.ts`
 
-Step registrations cover the 12 API steps enumerated in the design §4.
+Step registrations cover the 14 API step handlers (the 12 enumerated in design §4 + 2 session-cookie helpers added in plan-review iter-2).
 
 - [ ] **Step 1: Write `api.ts`**
 
@@ -2329,7 +2331,7 @@ No gaps.
 
 - `HangmanWorld` (Task 4) declares `browser`, `context`, `page`, `apiRequest`, `lastApiResponse`, `lastApiBody`, `dialogCount`, `backendUrl`, `frontendUrl`. All other tasks (5–8) reference exactly these names.
 - Step signatures in Tasks 7/8 match the patterns used by Tasks 9–19's Gherkin (e.g., `Given I start a new game with category {string} and difficulty {string}` is registered once in api.ts and called from games.feature, games-current.feature, guesses.feature, history.feature).
-- The `assertBackendReachable` helper (Task 5) is referenced nowhere else by name — scoped to `hooks.ts`.
+- The `assertReachable` helper (Task 5) is referenced nowhere else by name — scoped to `hooks.ts`; called twice in `BeforeAll` (once for backend, once for frontend).
 - `getPath` + `storeResponse` helpers (Task 7) are file-local to `api.ts` — no cross-file name collision.
 
 ### Notes for the executor
