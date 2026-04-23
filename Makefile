@@ -2,6 +2,7 @@
 
 install:
 	cd backend && uv sync
+	cd backend && uv pip install -e .
 	cd frontend && pnpm install
 	cd frontend && pnpm exec playwright install chromium
 
