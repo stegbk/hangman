@@ -43,14 +43,21 @@ def test_env_var_absolute_path_loads_caller_pool(monkeypatch, tmp_path):
     assert all(len(words) == 1 for words in pool.categories.values())
 
 
-def test_env_var_relative_path_resolves_against_backend_root(monkeypatch):
-    # Depends on backend/words.test.txt existing (shipped in Step 1).
+def test_env_var_relative_path_resolves_against_backend_root(monkeypatch, tmp_path):
+    # Prove the lifespan resolves HANGMAN_WORDS_FILE against BACKEND_ROOT,
+    # NOT against the current working directory. Change CWD to tmp_path so
+    # a CWD-relative resolution would fail (tmp_path has no words.test.txt),
+    # then verify the pool still loads from backend/words.test.txt.
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("HANGMAN_WORDS_FILE", "words.test.txt")
     from hangman.main import app
 
     with TestClient(app) as client:
         pool = client.app.state.word_pool
 
+    # Pin the exact category set — an empty pool would satisfy the
+    # "all categories have 1 word" check vacuously.
+    assert set(pool.categories.keys()) == {"animals", "food", "tech"}
     assert all(len(words) == 1 for words in pool.categories.values())
 
 

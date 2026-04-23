@@ -41,16 +41,16 @@ function getPath(body: unknown, dotPath: string): unknown {
 
 function currentGameId(world: HangmanWorld): string {
   const id = getPath(world.lastApiBody, 'id');
-  // Backend Game.id is int (backend/src/hangman/models.py) — we accept
-  // number | string and let the caller interpolate. Empty string / 0 /
-  // null / undefined all fail this guard.
-  if (
-    (typeof id !== 'number' || !Number.isFinite(id)) &&
-    (typeof id !== 'string' || id.length === 0)
-  ) {
-    throw new Error('No current game id in lastApiBody — start a game before calling this step.');
+  // Backend Game.id is autoincrement int >= 1 (backend/src/hangman/models.py),
+  // so 0 is never a real game id. Reject empty/zero/null/undefined loudly so
+  // a malformed response body doesn't silently hit /games/0/guesses.
+  if (typeof id === 'number' && Number.isFinite(id) && id > 0) {
+    return String(id);
   }
-  return String(id);
+  if (typeof id === 'string' && id.length > 0 && id !== '0') {
+    return id;
+  }
+  throw new Error('No current game id in lastApiBody — start a game before calling this step.');
 }
 
 Given(
@@ -121,9 +121,18 @@ Then(
   'the response body has {string} equal to {string}',
   function (this: HangmanWorld, dotPath: string, expected: string) {
     const found = getPath(this.lastApiBody, dotPath);
-    // Coerce both sides to string for comparison — Gherkin args are always
-    // strings; body values are whatever the API emits (number, string, bool).
-    expect(String(found)).toBe(expected);
+    // Type-preserving comparison: try parsing the Gherkin expected value
+    // as JSON first (so `"8"` → 8, `"true"` → true, `"null"` → null), fall
+    // back to the raw string for bare text (`"IN_PROGRESS"`, `"c"`, etc.).
+    // Failing over to `String(found)` coercion would let contract regressions
+    // slip — a number field silently becoming a string would still pass.
+    let target: unknown;
+    try {
+      target = JSON.parse(expected);
+    } catch {
+      target = expected;
+    }
+    expect(found).toBe(target);
   },
 );
 
@@ -143,6 +152,15 @@ Then(
 Then('the response body field {string} is absent', function (this: HangmanWorld, dotPath: string) {
   const found = getPath(this.lastApiBody, dotPath);
   expect(found).toBeUndefined();
+});
+
+Then('the response body field {string} is set', function (this: HangmanWorld, dotPath: string) {
+  // Asserts the field is present AND not null. Complements "is absent";
+  // use it to prove the backend populated a nullable field (e.g.,
+  // CreateGameResponse.forfeited_game_id in the forfeit-chain scenario).
+  const found = getPath(this.lastApiBody, dotPath);
+  expect(found).not.toBeUndefined();
+  expect(found).not.toBeNull();
 });
 
 Then(

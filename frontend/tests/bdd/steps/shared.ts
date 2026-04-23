@@ -1,14 +1,11 @@
 /**
  * Cross-cutting steps and hooks.
  *
- * Three dialog hooks are registered on mutually-exclusive tags:
+ * Two dialog hooks are registered on mutually-exclusive tags:
  *
  *   @dialog-accept  → listener hits OK on every window.confirm / alert.
  *                     Use in UC3 forfeit (user confirms they want to
  *                     abandon the active game).
- *
- *   @dialog-reject  → listener hits Cancel. Use for the "user cancelled"
- *                     branch of any confirm flow.
  *
  *   @dialog-tracked → listener only counts dialogs without handling them.
  *                     Use when the scenario asserts that NO dialog fired
@@ -17,7 +14,12 @@
  *                     unexpected dialog will also block subsequent
  *                     Playwright actions — the desired loud-failure.
  *
- * Scenarios must pick exactly one of the three tags if they interact
+ * A `@dialog-reject` hook for the "user cancelled" branch is not shipped
+ * here — no scenario currently exercises Cancel. Add one when the first
+ * scenario that needs it is authored; the mutex guard is already
+ * parametrized to include it then.
+ *
+ * Scenarios must pick exactly one of the dialog tags if they interact
  * with any confirm()/alert(). `this.dialogCount` is reset in the
  * per-scenario Before hook in support/hooks.ts.
  */
@@ -34,29 +36,18 @@ Given('the backend and frontend are running', function (this: HangmanWorld) {
 
 // Mutex guard: cucumber runs every matching Before hook, so a scenario
 // accidentally tagged with two @dialog-* tags would register two listeners
-// and behave unpredictably. Fail the scenario loudly instead.
-Before(
-  {
-    tags: '(@dialog-accept and @dialog-reject) or (@dialog-accept and @dialog-tracked) or (@dialog-reject and @dialog-tracked)',
-  },
-  function () {
-    throw new Error(
-      'Scenario has multiple @dialog-* tags. Pick exactly one of @dialog-accept, @dialog-reject, @dialog-tracked.',
-    );
-  },
-);
+// and behave unpredictably. Fail the scenario loudly instead. Expression
+// must be updated if a new @dialog-* hook is added below.
+Before({ tags: '@dialog-accept and @dialog-tracked' }, function () {
+  throw new Error(
+    'Scenario has multiple @dialog-* tags. Pick exactly one of @dialog-accept, @dialog-tracked.',
+  );
+});
 
 Before({ tags: '@dialog-accept' }, async function (this: HangmanWorld) {
   this.page.on('dialog', async (dialog) => {
     this.dialogCount += 1;
     await dialog.accept();
-  });
-});
-
-Before({ tags: '@dialog-reject' }, async function (this: HangmanWorld) {
-  this.page.on('dialog', async (dialog) => {
-    this.dialogCount += 1;
-    await dialog.dismiss();
   });
 });
 

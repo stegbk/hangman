@@ -49,3 +49,12 @@ Feature: POST /api/v1/games (start and forfeit-chain)
     Then the response status is 201
     And the response body has "state" equal to "IN_PROGRESS"
     And the response body has "difficulty" equal to "hard"
+    # The response must identify which prior game was forfeited — without
+    # this, the scenario would pass if the backend incorrectly allowed
+    # multiple concurrent active games.
+    And the response body field "forfeited_game_id" is set
+    # /games/current must now be the new hard game, proving the prior
+    # animals/easy game is no longer IN_PROGRESS.
+    When I request "/api/v1/games/current"
+    Then the response status is 200
+    And the response body has "difficulty" equal to "hard"
