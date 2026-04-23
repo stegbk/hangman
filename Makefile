@@ -1,4 +1,4 @@
-.PHONY: install backend frontend test lint typecheck verify clean
+.PHONY: install backend backend-test frontend bdd test lint typecheck verify clean
 
 # Port overrides. Default to the canonical 8000 / 3000; override on the command
 # line when those are occupied (e.g. SSH tunnel on 8000):
@@ -38,3 +38,17 @@ clean:
 	rm -rf backend/.venv backend/.pytest_cache backend/.mypy_cache backend/.ruff_cache
 	rm -rf frontend/node_modules frontend/dist frontend/playwright-report
 	rm -f backend/hangman.db
+
+# BDD test-mode backend: isolated SQLite file (so BDD runs never touch the
+# production hangman.db) + test-mode word pool (one-word "cat" per category).
+backend-test:
+	cd backend && \
+	HANGMAN_WORDS_FILE=words.test.txt \
+	HANGMAN_DB_URL=sqlite:///$(CURDIR)/backend/hangman.test.db \
+	uv run uvicorn hangman.main:app --host 127.0.0.1 --port $(HANGMAN_BACKEND_PORT)
+
+bdd:
+	cd frontend && \
+	HANGMAN_BACKEND_PORT=$(HANGMAN_BACKEND_PORT) \
+	HANGMAN_FRONTEND_PORT=$(HANGMAN_FRONTEND_PORT) \
+	pnpm bdd
