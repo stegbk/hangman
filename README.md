@@ -124,3 +124,30 @@ hangman/
 ```
 
 For the full architectural design see [`docs/plans/2026-04-22-hangman-scaffold-design.md`](docs/plans/2026-04-22-hangman-scaffold-design.md); for the PRD see [`docs/prds/hangman-scaffold.md`](docs/prds/hangman-scaffold.md).
+
+## Running the BDD suite
+
+The BDD suite (pure `@cucumber/cucumber` v12 + `playwright`) runs separately from `make verify` and requires the backend + frontend running in test-mode.
+
+```bash
+# Terminal A — backend with test-mode word pool (one-word "cat" per category)
+make backend-test
+
+# Terminal B — frontend dev server
+make frontend
+
+# Terminal C — run all 33 scenarios across 11 feature files
+make bdd
+```
+
+Port overrides work the same as `make backend` / `make frontend`:
+
+```bash
+make backend-test HANGMAN_BACKEND_PORT=8002
+make frontend     HANGMAN_BACKEND_PORT=8002 HANGMAN_FRONTEND_PORT=3001
+make bdd          HANGMAN_BACKEND_PORT=8002 HANGMAN_FRONTEND_PORT=3001
+```
+
+Artifacts land in `frontend/test-results/cucumber.{json,ndjson}` (gitignored).
+
+**Why `make backend-test` and not `make backend`?** Production `words.txt` has 45 words across 3 categories; only a handful of letters never appear in any easy-animals seed, which isn't enough to deterministically test Easy (8 misses) and Medium (6 misses) LOSS scenarios. `make backend-test` sets `HANGMAN_WORDS_FILE=words.test.txt` so every category collapses to `"cat"`, giving every scenario one deterministic source of truth for guess outcomes. It also isolates the DB (`HANGMAN_DB_URL=sqlite:///...hangman.test.db`) so BDD runs never touch your local production `hangman.db`. See [`docs/plans/2026-04-23-bdd-suite-design.md`](docs/plans/2026-04-23-bdd-suite-design.md) §2b for the full rationale.
