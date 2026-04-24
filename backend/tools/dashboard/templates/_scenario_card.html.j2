@@ -10,7 +10,7 @@
   <ul style="margin:8px 0 0; padding-left:16px;">
     {% for f in sc.findings %}
     <li>
-      <strong>{{ f.severity }}</strong> {{ f.criterion_id }}
+      <strong>{{ f.severity.value }}</strong> {{ f.criterion_id }}
       {% if not f.is_recognized_criterion %}<span title="LLM-invented criterion" style="color:var(--warning)">⚠</span>{% endif %}
       — {{ f.problem }}
     </li>

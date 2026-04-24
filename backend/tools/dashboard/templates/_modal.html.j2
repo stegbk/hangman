@@ -7,7 +7,7 @@
 <h3>Findings</h3>
 {% for f in sc.findings %}
 <div style="margin:12px 0;">
-  <strong>{{ f.severity }}</strong> {{ f.criterion_id }}
+  <strong>{{ f.severity.value }}</strong> {{ f.criterion_id }}
   {% if not f.is_recognized_criterion %}⚠ LLM-invented{% endif %}
   <div>{{ f.problem }}</div>
   <div class="muted">Evidence: {{ f.evidence }}</div>

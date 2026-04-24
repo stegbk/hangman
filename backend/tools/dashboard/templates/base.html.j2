@@ -83,7 +83,7 @@
       <ul>
         {% for f in group.findings %}
         <li>
-          <strong>{{ f.severity }}</strong> {{ f.criterion_id }}
+          <strong>{{ f.severity.value }}</strong> {{ f.criterion_id }}
           {% if not f.is_recognized_criterion %}<span title="LLM-invented criterion" style="color:var(--warning)">⚠</span>{% endif %}
           — {{ f.problem }}
           <div class="muted">Evidence: {{ f.evidence }}</div>
