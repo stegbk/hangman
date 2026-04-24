@@ -1,7 +1,7 @@
 """Tests for LlmEvaluator — mocked Anthropic client, no network."""
 
 import pytest
-from tools.dashboard.llm.client import LlmEvaluator, RubricTooShortError
+from tools.dashboard.llm.client import CacheNotActiveError, LlmEvaluator, RubricTooShortError
 from tools.dashboard.models import Package, PackageKind
 
 
@@ -61,6 +61,48 @@ class TestSystemPromptAndCaching:
         results, skipped = evaluator.evaluate((_pkg(),))
         assert len(results) == 1
         assert results[0].cache_creation_input_tokens > 0
+
+    def test_warm_cache_read_only_does_not_raise(self, mock_anthropic_client):
+        # Second+ run: cache_creation==0 but cache_read>0 — caching IS active.
+        from tests.unit.tools.dashboard.conftest import FakeMessage, FakeUsage
+
+        warm_response = FakeMessage(
+            content=[],
+            usage=FakeUsage(
+                input_tokens=100,
+                output_tokens=200,
+                cache_creation_input_tokens=0,
+                cache_read_input_tokens=800,
+            ),
+        )
+        # Patch content to return a valid tool_use block so parse succeeds.
+        from tests.unit.tools.dashboard.conftest import FakeToolUseBlock
+
+        warm_response.content = [FakeToolUseBlock(name="ReportFindings", input={"findings": []})]
+        mock_anthropic_client.scripted_responses.append(warm_response)
+        evaluator = LlmEvaluator(client=mock_anthropic_client, max_workers=1)
+        # Must NOT raise CacheNotActiveError when cache_read>0 and cache_creation==0.
+        results, skipped = evaluator.evaluate((_pkg(),))
+        assert skipped == ()
+        assert results[0].succeeded is True
+
+    def test_no_cache_tokens_at_all_raises(self, mock_anthropic_client):
+        # Neither cache_creation nor cache_read → caching is broken.
+        from tests.unit.tools.dashboard.conftest import FakeMessage, FakeToolUseBlock, FakeUsage
+
+        no_cache_response = FakeMessage(
+            content=[FakeToolUseBlock(name="ReportFindings", input={"findings": []})],
+            usage=FakeUsage(
+                input_tokens=1000,
+                output_tokens=200,
+                cache_creation_input_tokens=0,
+                cache_read_input_tokens=0,
+            ),
+        )
+        mock_anthropic_client.scripted_responses.append(no_cache_response)
+        evaluator = LlmEvaluator(client=mock_anthropic_client, max_workers=1)
+        with pytest.raises(CacheNotActiveError):
+            evaluator.evaluate((_pkg(),))
 
     def test_cache_assertion_skips_failed_first_package(
         self, mock_anthropic_client, malformed_tool_input, good_tool_input

@@ -112,12 +112,20 @@ class LlmEvaluator:
             sequential_results.append(result)
             last_sequential_idx = idx
             if result.succeeded:
-                if result.cache_creation_input_tokens == 0:
+                # Caching is active if the first call either WROTE the cache
+                # (cache_creation_input_tokens > 0) or READ from it
+                # (cache_read_input_tokens > 0).  A warm cache hits the read
+                # branch; a cold cache hits the write branch.
+                cache_active = (
+                    result.cache_creation_input_tokens > 0 or result.cache_read_input_tokens > 0
+                )
+                if not cache_active:
                     raise CacheNotActiveError(
                         f"First successful LLM call (package {pkg.id}) "
-                        f"returned cache_creation_input_tokens == 0 — "
-                        f"prompt caching is not active. Check rubric length "
-                        f"and cache_control placement on system AND tools."
+                        f"returned both cache_creation_input_tokens == 0 and "
+                        f"cache_read_input_tokens == 0 — prompt caching is "
+                        f"not active. Check rubric length and cache_control "
+                        f"placement on system AND tools."
                     )
                 break
 

@@ -51,26 +51,36 @@ class TestComputeCost:
         assert report.total_usd == pytest.approx(expected, rel=1e-6)
 
     def test_cache_write_charged_at_125x(self) -> None:
-        # 1000 tokens, all cache_creation → 1.25× input
-        result = _result(input_tokens=1000, cache_write=1000, output=0)
+        # Anthropic API: input_tokens = uncached regular tokens.
+        # When the entire prompt is newly cached, input_tokens=0 and
+        # cache_creation_input_tokens=1000.
+        result = _result(input_tokens=0, cache_write=1000, output=0)
         report = compute_cost([result])
         input_rate = PRICING["claude-sonnet-4-6"]["input"]
         expected = 1000 * input_rate * CACHE_WRITE_MULT
         assert report.total_usd == pytest.approx(expected, rel=1e-6)
 
     def test_cache_read_charged_at_0_1x(self) -> None:
-        # 1000 tokens, all cache_read → 0.1× input
-        result = _result(input_tokens=1000, cache_read=1000, output=0)
+        # Anthropic API: input_tokens = uncached regular tokens.
+        # When the entire prompt is served from cache, input_tokens=0 and
+        # cache_read_input_tokens=1000.
+        result = _result(input_tokens=0, cache_read=1000, output=0)
         report = compute_cost([result])
         input_rate = PRICING["claude-sonnet-4-6"]["input"]
         expected = 1000 * input_rate * CACHE_READ_MULT
         assert report.total_usd == pytest.approx(expected, rel=1e-6)
 
     def test_cache_hit_rate_computed(self) -> None:
-        a = _result(input_tokens=1000, cache_read=900, cache_write=100)
-        b = _result(input_tokens=1000, cache_read=800, cache_write=200)
+        # cache_hit_rate = total_read / (regular + read + write)
+        # a: input=100 (uncached regular), cache_read=900, cache_write=100
+        # b: input=200, cache_read=800, cache_write=200
+        # total_read = 1700, total_all = (100+200) + (900+800) + (100+200) = 2300
+        a = _result(input_tokens=100, cache_read=900, cache_write=100)
+        b = _result(input_tokens=200, cache_read=800, cache_write=200)
         report = compute_cost([a, b])
-        assert report.cache_hit_rate == pytest.approx((900 + 800) / (1000 + 1000))
+        total_read = 900 + 800
+        total_all = (100 + 200) + (900 + 800) + (100 + 200)
+        assert report.cache_hit_rate == pytest.approx(total_read / total_all)
 
     def test_aggregates_tokens_across_calls(self) -> None:
         calls = [_result(input_tokens=1000, output=500) for _ in range(10)]

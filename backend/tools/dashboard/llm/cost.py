@@ -37,13 +37,18 @@ def compute_cost(results: list[LlmCallResult]) -> CostReport:
 
     total_usd = 0.0
     for r in succeeded:
-        regular = r.input_tokens - r.cache_read_input_tokens - r.cache_creation_input_tokens
-        total_usd += regular * rates["input"]
+        # input_tokens from the Anthropic API is the number of *uncached* (regular)
+        # input tokens processed.  cache_read and cache_creation are reported
+        # separately and are NOT subtracted from input_tokens — they are additive.
+        total_usd += r.input_tokens * rates["input"]
         total_usd += r.cache_creation_input_tokens * rates["input"] * CACHE_WRITE_MULT
         total_usd += r.cache_read_input_tokens * rates["input"] * CACHE_READ_MULT
         total_usd += r.output_tokens * rates["output"]
 
-    cache_hit_rate = total_read / total_input if total_input else 0.0
+    # Denominator = all tokens sent to the model (regular + cached-read + cache-write).
+    # input_tokens from the API counts only the non-cached (regular) portion.
+    total_all_input = total_input + total_read + total_write
+    cache_hit_rate = total_read / total_all_input if total_all_input else 0.0
 
     return CostReport(
         model=model,

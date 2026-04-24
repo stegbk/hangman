@@ -125,6 +125,45 @@ hangman/
 
 For the full architectural design see [`docs/plans/2026-04-22-hangman-scaffold-design.md`](docs/plans/2026-04-22-hangman-scaffold-design.md); for the PRD see [`docs/prds/hangman-scaffold.md`](docs/prds/hangman-scaffold.md).
 
+## BDD Dashboard (Feature 2)
+
+A developer-only tool that evaluates the BDD suite's Gherkin quality using
+the Anthropic API. Produces `tests/bdd/reports/dashboard.html` — a single
+self-contained HTML file with coverage grades, LLM-evaluated findings,
+trend chart, and per-scenario modal.
+
+### Prerequisites
+
+- `ANTHROPIC_API_KEY` in your environment (starts with `sk-ant-`). Place
+  it in `.env` at the repo root (gitignored; `make bdd-dashboard`
+  auto-loads it).
+- A prior `make bdd` run (produces `frontend/test-results/cucumber.ndjson`).
+
+### Run
+
+```bash
+make bdd-dashboard                                # claude-sonnet-4-6, ~$1.11/run
+make bdd-dashboard MODEL=claude-haiku-4-5         # cheaper, ~$0.37/run
+make bdd-dashboard MODEL=claude-opus-4-7          # deepest, ~$1.86/run
+```
+
+Output: `tests/bdd/reports/dashboard.html`. Open in a browser.
+
+### What it evaluates
+
+- **Coverage:** per-endpoint (`POST /api/v1/games/{id}/guesses`, etc.)
+  and per-UC (UC1, UC2, ...) — Full / Partial / None based on
+  `@happy` + `@failure` + `@edge` mix.
+- **Quality:** 13-criterion rubric covering domain concerns
+  (trivial-pass, missing error codes, missing state assertions) and
+  hygiene (duplicate titles, missing primary tags, long scenarios).
+- **Trend:** per-run history under `.bdd-history/` (gitignored).
+
+### Cost
+
+Runs at ~$1.11 Sonnet / ~$0.37 Haiku / ~$1.86 Opus per invocation. The
+rubric is cached; cache hit rate runs ~90% after the first call.
+
 ## Running the BDD suite
 
 The BDD suite (pure `@cucumber/cucumber` v12 + `playwright`) runs separately from `make verify` and requires the backend + frontend running in test-mode.
