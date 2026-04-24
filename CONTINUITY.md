@@ -20,93 +20,16 @@ A local HTTP hangman game with category picker, score/streak tracking, difficult
 
 ### Done (recent 2-3 only)
 
+- **BDD Dashboard shipped (Feature 2 of 3)** — PR #3 merged to master via `0bfe6ba` (2026-04-24). 23 commits, +10885/-3 LOC. Python tool at `backend/tools/dashboard/`: parses `cucumber.ndjson`, packages 33 scenarios + 11 features into ~44 LLM calls (Anthropic SDK, forced `ReportFindings` tool use, prompt caching ~90%), renders single-file HTML via Jinja2. 12 modules / 99 tests / 13-criterion rubric (D1–D6 domain + H1–H7 hygiene). Default `claude-sonnet-4-6` (~$0.74/run measured; configurable to Haiku $0.37 or Opus $1.86 via `MODEL=`). Full workflow: PRD v2.0 + research brief + 13-section design + 14-task plan, **plan-review loop PASSED in 3 iterations**, subagent-driven TDD (9 dispatch waves), /simplify (1×P1 + 6×P2 + 4×P3 fixed), **code-review loop PASSED in 2 iterations** (Codex + PR Review Toolkit verdict-agree clean), live integration verified twice ($0.74, 90→93% cache hit). 4 real bugs caught + fixed in-flight (3 in cost/cache logic during H1 smoke; 1 cosmetic Severity.value rendering).
 - **BDD suite shipped (Feature 1 of 3)** — PR #2 merged to master via `a811d67` (2026-04-23). 37 commits, +5953/-173. Pure `@cucumber/cucumber` v12.8.1 + `playwright` 1.59 (library) + `tsx` 4.19. 33 scenarios / 287 steps across 11 `.feature` files covering every backend endpoint + 5 UI use cases (UC1–UC4 + per-difficulty WIN/LOSS). Backend gains `HANGMAN_WORDS_FILE` env-var support + `backend/words.test.txt` for determinism. Full workflow ceremony: PRD v1.2 + research brief + 11-section design + 23-task plan, **plan-review loop PASSED in 6 iterations**, subagent-driven TDD (3 subagents per task), /simplify (4 P2 fixes), **code-review loop PASSED in 2 iterations**. `make bdd` 33/33 / 10 smoke; `make verify` clean. 2 latent cucumber-js bugs caught + fixed in-flight (Cucumber Expression escape, `require:` hook-order).
-- **Hangman scaffold shipped** — PR #1 merged to master via `b09458c` (2026-04-23). 45 commits, +15k LOC. Backend (FastAPI + SQLAlchemy 2.0 + SQLite), frontend (React 19 + Vite 8 + TypeScript), Playwright E2E. Full workflow ceremony: PRD v1.2, research brief, design spec, 27-task plan, 3-iter plan-review loop, subagent-driven TDD, 3-iter code-review loop, /simplify, 2 Playwright smokes passing, `make verify` clean. Backend 172 tests / Frontend 28 tests / 2 E2E specs.
 
 ### Now
 
-No active feature. Both scaffold + BDD suite on master. Playable locally via `make install && make backend && make frontend`; BDD via `make backend-test` + `make frontend` + `make bdd` (33/33 green).
+No active feature. Scaffold + BDD suite + BDD dashboard all on master. Playable locally via `make install && make backend && make frontend`. BDD: `make backend-test` + `make frontend` + `make bdd` (33/33 green from Feature 1's last live run). Dashboard: `make bdd-dashboard` (requires `ANTHROPIC_API_KEY` in `.env`).
 
 ### Next
 
-Ready for **Feature 2: bdd-dashboard** (static analyzer + HTML generator matching `bdd_dashboard_example.html`) per the three-feature BDD plan. Or any other feature. Pick via `/new-feature <name>`.
-
----
-
-## Workflow
-
-> Updated automatically by `/new-feature` and `/fix-bug` commands.
-> The Stop hook reminds you of the current phase on every response.
-> The PreToolUse hook blocks commit/push/PR if quality gates are incomplete.
-> Delete this section when no workflow is active (or set Command to `none`).
-
-| Field     | Value                      |
-| --------- | -------------------------- |
-| Command   | /new-feature bdd-dashboard |
-| Phase     | 6 — Ship                   |
-| Next step | Push branch + create PR    |
-
-### Checklist
-
-- [x] Worktree created (`.worktrees/bdd-dashboard` on feat/bdd-dashboard, base f96e857)
-- [x] Project state read
-- [x] Plugins verified (superpowers + pr-review-toolkit + prd:discuss/create all exercised successfully during Feature 1)
-- [x] PRD created (`docs/prds/bdd-dashboard.md` v1.1 — 7 user stories, 10 non-goals, 13-rule starter opinion engine in Appendix B; v1.1 corrections: consume gherkinDocument from NDJSON, Chart.js pin 4.5.1 exact, scenario status rollup)
-- [x] Research artifact produced (`docs/research/2026-04-23-bdd-dashboard.md` — 5 libs in depth + 1 breadth survey; 3 load-bearing findings patched into PRD v1.1; 7 open risks documented)
-- [x] Design guidance loaded — N/A: this feature is a developer tool generating a single dashboard HTML; visual direction is pre-set by the user's reference example. Per PRD §2, no user-facing product surface.
-- [x] Brainstorming complete (`docs/plans/2026-04-24-bdd-dashboard-design.md` — 13 sections, approved by KC)
-- [x] Approach comparison filled (see § "Approach Comparison" below)
-- [x] Contrarian gate passed — user-validated (Codex hung at 12min; fallback-to-user per protocol). User directed the v2 LLM pivot that made the original static-rules default the credible alternative, then explicitly rejected it. Approach comparison re-scored under v2 post-pivot.
-- [x] Council verdict (if triggered): user-validated LLM pivot — static rules rejected
-- [x] Plan written (`docs/plans/2026-04-24-bdd-dashboard-plan.md` — 14 tasks, 8 phases, dispatch plan with serial/parallel groupings, self-review pass)
-- [x] Plan review loop (3 iterations) — PASS. Iter 1 (Codex): 3×P1 + 3×P2 (cache_control missing on tool, cache-assertion on first PACKAGE not first SUCCESS, CLI cwd-fragility, feature-findings not rendered, `|safe` XSS footgun, render/write interface inconsistency). Iter 2 (Claude + Codex): 4×P2 (prose/code contradiction on all-fail, missing all-fail test, feature-findings CSS, 4096 DRY + framing). Iter 3 (Claude + Codex): clean — EXIT CRITERIA MET.
-- [x] TDD execution complete (14 tasks via subagent-driven-development across 9 dispatch waves; 99 tests landed)
-- [x] Code review loop (2 iterations) — PASS. Iter 1: Codex (high-risk surface) + PR Review Toolkit (full feature) found 1×P1 (cache-validation gap from /simplify warm-up cap) + 2×P2 (API-key prefix too strict, broad except). Iter 2: both reviewers verdict-agree CLEAN.
-- [x] Simplified — `/simplify` pass at commit `a36df86` addressed 1×P1 (warm-up cap) + 6×P2s + 4×P3s from three parallel reviewers.
-- [x] Verified — `make verify` exit 0; backend pytest 290/290, frontend vitest 28/28, dashboard 99/99, ruff + mypy + ESLint + tsc all clean.
-- [x] E2E use cases designed — N/A: developer tooling, no user-facing surface (per design spec §9.4).
-- [x] E2E verified — N/A: developer tooling. Manual browser smoke + 2 live integration runs ($0.74/run, 90→93% cache hit) is the verification.
-- [ ] E2E regression passed (Phase 5.4b) — N/A
-- [ ] E2E use cases graduated to tests/e2e/use-cases/ (Phase 6.2b) — N/A
-- [ ] E2E specs graduated to tests/e2e/specs/ (Phase 6.2c — if Playwright framework installed) — N/A
-- [ ] Learnings documented (if any)
-- [x] State files updated
-- [ ] Committed and pushed
-- [ ] PR created
-- [ ] PR reviews addressed
-- [ ] Branch finished
-
----
-
-## Approach Comparison (v2 — post-pivot)
-
-### Chosen Default
-
-**Python OO package at `backend/tools/dashboard/`** that performs **LLM-based evaluation** via the Anthropic SDK. NdjsonParser + CoverageGrader (procedural, deterministic) feed a Packager that produces 33 scenario-packages + 11 feature-packages per run. LlmEvaluator dispatches all 44 packages to the Anthropic Messages API (default `claude-sonnet-4-6`, configurable) with a 13-criterion rubric in the system prompt + forced `ReportFindings` tool use + prompt caching. Results + procedural coverage grades + history flow into a Jinja-rendered single-file HTML dashboard. Golden-file tests scoped to deterministic modules only (Renderer, CoverageGrader); LLM-adjacent code tested with a MockAnthropicClient.
-
-### Best Credible Alternative
-
-**Static rule engine** (what was designed as v1 of this spec — the original "13 Rule classes implementing a `Rule` Protocol" design). Fully deterministic. No LLM cost. No network dependency. Faster (local-only). But no semantic judgment — cannot catch anti-patterns like "scenario says forfeit but only tests the happy path."
-
-### Scoring (fixed axes)
-
-| Axis                  | Default (v2 LLM)                                                         | Alternative (v1 static)                                       |
-| --------------------- | ------------------------------------------------------------------------ | ------------------------------------------------------------- |
-| Complexity            | **M** (add Packager + LlmEvaluator + Rubric + cost mgmt + mocking infra) | **M** (9 modules, 13 rule classes)                            |
-| Blast Radius          | **L** (new dev tooling; API key side-channel)                            | **L** (new dev tooling)                                       |
-| Reversibility         | **M** (refactoring LLM layer is not trivial)                             | **M** (refactoring 9 files)                                   |
-| Time to Validate      | **M** (mocked unit + 1 live integration run per iteration at ~$1/run)    | **L** (fully unit-testable)                                   |
-| User/Correctness Risk | **M** — but captures semantic-quality findings static rules cannot       | **M** — deterministic but catches only pre-hardcoded patterns |
-
-### Cheapest Falsifying Test
-
-**User direction.** The user explicitly directed the LLM pivot mid-design ("we're asking the LLM to evaluate the code... segment and package the tests in a way that they can be evaluated by an LLM, not just undergo inspection with static procedural rules"). The alternative (static rules) was the pre-pivot design; user rejected it on semantic-coverage grounds.
-
-### Contrarian verdict
-
-**VALIDATED by user direction** — Codex contrarian gate hung for 12+ minutes on an earlier attempt; fallback per council-skill protocol is user-validates. User's Q1-Q8 answers in the PRD discussion + the explicit pivot challenge constitute the user's validation of the LLM path. The alternative (static rules) was explicitly rejected.
-
-**Cost trade-off acknowledged by user:** default Sonnet 4.6 at ~$1.11/run, configurable to Haiku 4.5 ($0.37/run) for cheap iteration or Opus 4.7 ($1.86/run) for deep review.
+Ready for **Feature 3: bdd-branch-coverage** (call graph + per-branch coverage contexts + gap detection) per the three-feature BDD plan. Will replace Feature 2's tag-based coverage with call-graph-based branch coverage. Pick via `/new-feature bdd-branch-coverage`.
 
 ---
 
