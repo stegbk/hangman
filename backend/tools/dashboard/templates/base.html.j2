@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>BDD Dashboard — {{ context.timestamp }}</title>
+  <style>
+    :root { --bg:#0f1115; --fg:#e8eaed; --muted:#9aa0a6; --accent:#4f8bf9;
+            --success:#2aa876; --warning:#f5a623; --error:#e74c3c; }
+    body { background:var(--bg); color:var(--fg); font-family:-apple-system,system-ui,sans-serif;
+           margin:0; padding:24px; }
+    h1 { margin:0 0 8px; font-weight:600; }
+    .muted { color:var(--muted); font-size:13px; }
+    .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr));
+             gap:12px; margin:24px 0; }
+    .card { background:#1a1d24; border-radius:12px; padding:16px; border:1px solid #252932; }
+    .card .value { font-size:28px; font-weight:700; margin:4px 0; }
+    .card.success .value { color:var(--success); }
+    .card.warning .value { color:var(--warning); }
+    .card.error .value { color:var(--error); }
+    .charts { display:grid; grid-template-columns:2fr 1fr; gap:16px; margin:24px 0; }
+    .chart-box { background:#1a1d24; border-radius:12px; padding:16px; }
+    .scenarios { display:grid; grid-template-columns:repeat(auto-fill,minmax(320px,1fr));
+                 gap:12px; }
+    .feature-findings { margin:24px 0; }
+    .feature-findings h2 { font-weight:600; margin:0 0 12px; }
+    .feature-findings .card { margin:8px 0; }
+    .feature-findings ul { margin:8px 0 0; padding-left:16px; }
+    .cost-footer { color:var(--muted); font-size:12px; margin-top:8px; }
+    .modal-backdrop { position:fixed; inset:0; background:rgba(0,0,0,.6); display:none;
+                      align-items:center; justify-content:center; }
+    .modal-backdrop.show { display:flex; }
+    .modal { background:#1a1d24; border-radius:12px; padding:24px;
+             max-width:600px; max-height:80vh; overflow:auto; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>BDD Dashboard</h1>
+    <div class="muted">{{ context.timestamp }}</div>
+    <div class="cost-footer">
+      Model: {{ run_summary.model }} · {{ cost_call_count }} calls ·
+      ${{ '%.2f'|format(run_summary.cost.total_usd) }} ·
+      {{ '%.0f'|format(run_summary.cost.cache_hit_rate * 100) }}% cache hit rate
+    </div>
+  </header>
+
+  {% if skipped_packages %}
+  <style>.warning-banner { background:var(--warning); color:#000; padding:12px; border-radius:8px; margin:12px 0; }</style>
+  <div class="warning-banner">
+    ⚠ {{ skipped_packages|length }} package(s) skipped due to LLM errors:
+    {{ skipped_packages|join(', ') }}. See stderr.
+  </div>
+  {% endif %}
+
+  <section class="cards">
+    {% for card in summary_cards %}
+    <div class="card {{ card.tone }}">
+      <div class="muted">{{ card.title }}</div>
+      <div class="value">{{ card.value }}</div>
+      <div class="muted">{{ card.subtitle }}</div>
+    </div>
+    {% endfor %}
+  </section>
+
+  <section class="charts">
+    <div class="chart-box"><canvas id="trend-chart"></canvas></div>
+    <div class="chart-box"><canvas id="severity-chart"></canvas></div>
+  </section>
+
+  <section class="scenarios">
+    {% for sc in scenarios %}
+      {% include "_scenario_card.html.j2" %}
+    {% endfor %}
+  </section>
+
+  {% if feature_findings %}
+  <section class="feature-findings">
+    <h2>Feature-level findings</h2>
+    {% for group in feature_findings %}
+    <div class="card">
+      <div class="muted">{{ group.file }}</div>
+      <div class="value" style="font-size:16px;">{{ group.name }}</div>
+      <ul>
+        {% for f in group.findings %}
+        <li>
+          <strong>{{ f.severity.value }}</strong> {{ f.criterion_id }}
+          {% if not f.is_recognized_criterion %}<span title="LLM-invented criterion" style="color:var(--warning)">⚠</span>{% endif %}
+          — {{ f.problem }}
+          <div class="muted">Evidence: {{ f.evidence }}</div>
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endfor %}
+  </section>
+  {% endif %}
+
+  <div class="modal-backdrop" id="modal-root">
+    <div class="modal" id="modal-body"></div>
+  </div>
+
+  <!-- tojson filter writes a safe JS literal; LLM-sourced strings inside
+       run_data cannot break out of this <script> block. Do NOT use |safe. -->
+  <script id="run-data" type="application/json">
+    {{ run_data | tojson }}
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.min.js"
+          integrity="{{ chart_js_sri }}"
+          crossorigin="anonymous"></script>
+  <script>
+    (function() {
+      const data = JSON.parse(document.getElementById('run-data').textContent);
+      new Chart(document.getElementById('trend-chart'), {
+        type: 'line',
+        data: { labels: data.history.map(h => h.timestamp),
+                datasets: [
+                  { label: 'Passed', data: data.history.map(h => h.passed), borderColor: '#2aa876' },
+                  { label: 'Failed', data: data.history.map(h => h.failed), borderColor: '#e74c3c' },
+                  { label: 'P0+P1', data: data.history.map(h => h.p0p1), borderColor: '#f5a623' },
+                ] },
+        options: { plugins: { legend: { labels: { color: '#e8eaed' } } },
+                   scales: { x: { ticks: { color: '#9aa0a6' } },
+                             y: { ticks: { color: '#9aa0a6' } } } }
+      });
+      new Chart(document.getElementById('severity-chart'), {
+        type: 'doughnut',
+        data: { labels: ['P0','P1','P2','P3'],
+                datasets: [{ data: data.severity_counts,
+                             backgroundColor: ['#e74c3c','#e67e22','#f5a623','#9aa0a6'] }] },
+        options: { plugins: { legend: { labels: { color: '#e8eaed' } } } }
+      });
+      document.querySelectorAll('[data-scenario-id]').forEach(card => {
+        card.addEventListener('click', () => {
+          const id = card.getAttribute('data-scenario-id');
+          const tpl = document.getElementById('modal-tpl-' + id);
+          if (tpl) {
+            document.getElementById('modal-body').innerHTML = tpl.innerHTML;
+            document.getElementById('modal-root').classList.add('show');
+          }
+        });
+      });
+      document.getElementById('modal-root').addEventListener('click', e => {
+        if (e.target.id === 'modal-root') e.target.classList.remove('show');
+      });
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>BDD Dashboard — 2026-04-24T12:00:00Z</title>
+  <style>
+    :root { --bg:#0f1115; --fg:#e8eaed; --muted:#9aa0a6; --accent:#4f8bf9;
+            --success:#2aa876; --warning:#f5a623; --error:#e74c3c; }
+    body { background:var(--bg); color:var(--fg); font-family:-apple-system,system-ui,sans-serif;
+           margin:0; padding:24px; }
+    h1 { margin:0 0 8px; font-weight:600; }
+    .muted { color:var(--muted); font-size:13px; }
+    .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr));
+             gap:12px; margin:24px 0; }
+    .card { background:#1a1d24; border-radius:12px; padding:16px; border:1px solid #252932; }
+    .card .value { font-size:28px; font-weight:700; margin:4px 0; }
+    .card.success .value { color:var(--success); }
+    .card.warning .value { color:var(--warning); }
+    .card.error .value { color:var(--error); }
+    .charts { display:grid; grid-template-columns:2fr 1fr; gap:16px; margin:24px 0; }
+    .chart-box { background:#1a1d24; border-radius:12px; padding:16px; }
+    .scenarios { display:grid; grid-template-columns:repeat(auto-fill,minmax(320px,1fr));
+                 gap:12px; }
+    .feature-findings { margin:24px 0; }
+    .feature-findings h2 { font-weight:600; margin:0 0 12px; }
+    .feature-findings .card { margin:8px 0; }
+    .feature-findings ul { margin:8px 0 0; padding-left:16px; }
+    .cost-footer { color:var(--muted); font-size:12px; margin-top:8px; }
+    .modal-backdrop { position:fixed; inset:0; background:rgba(0,0,0,.6); display:none;
+                      align-items:center; justify-content:center; }
+    .modal-backdrop.show { display:flex; }
+    .modal { background:#1a1d24; border-radius:12px; padding:24px;
+             max-width:600px; max-height:80vh; overflow:auto; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>BDD Dashboard</h1>
+    <div class="muted">2026-04-24T12:00:00Z</div>
+    <div class="cost-footer">
+      Model: claude-sonnet-4-6 · 2 calls ·
+      $0.01 ·
+      80% cache hit rate
+    </div>
+  </header>
+
+  
+
+  <section class="cards">
+    
+    <div class="card ">
+      <div class="muted">Total scenarios</div>
+      <div class="value">1</div>
+      <div class="muted">1 features</div>
+    </div>
+    
+    <div class="card success">
+      <div class="muted">Passing</div>
+      <div class="value">1/1 (100%)</div>
+      <div class="muted">@smoke: 1/1</div>
+    </div>
+    
+    <div class="card success">
+      <div class="muted">Endpoint coverage</div>
+      <div class="value">0/0 Full</div>
+      <div class="muted">0 Partial · 0 None</div>
+    </div>
+    
+    <div class="card warning">
+      <div class="muted">UC coverage</div>
+      <div class="value">0/1 Full</div>
+      <div class="muted">1 Partial · 0 None</div>
+    </div>
+    
+    <div class="card ">
+      <div class="muted">P0 findings</div>
+      <div class="value">0</div>
+      <div class="muted">Broken</div>
+    </div>
+    
+    <div class="card ">
+      <div class="muted">P1 findings</div>
+      <div class="value">0</div>
+      <div class="muted">Wrong</div>
+    </div>
+    
+    <div class="card warning">
+      <div class="muted">P2 findings</div>
+      <div class="value">1</div>
+      <div class="muted">Poor</div>
+    </div>
+    
+  </section>
+
+  <section class="charts">
+    <div class="chart-box"><canvas id="trend-chart"></canvas></div>
+    <div class="chart-box"><canvas id="severity-chart"></canvas></div>
+  </section>
+
+  <section class="scenarios">
+    
+      <article class="card success" data-scenario-id="features_minimal_feature_3">
+  <div class="muted">features/minimal.feature:3</div>
+  <div class="value" style="font-size:16px;">trivial pass</div>
+  <div>
+    <span class="muted">@happy</span>
+    <span class="muted"> · @smoke</span>
+    <span class="muted"> · passed</span>
+  </div>
+  
+  <ul style="margin:8px 0 0; padding-left:16px;">
+    
+    <li>
+      <strong>P2</strong> D1
+      
+      — Trivial pass
+    </li>
+    
+  </ul>
+  
+  <template id="modal-tpl-features_minimal_feature_3">
+    <h2>trivial pass</h2>
+<div class="muted">features/minimal.feature:3 · passed</div>
+<h3>Steps</h3>
+<pre>Given a setup
+</pre>
+
+<h3>Findings</h3>
+
+<div style="margin:12px 0;">
+  <strong>P2</strong> D1
+  
+  <div>Trivial pass</div>
+  <div class="muted">Evidence: &lt;script&gt;alert(1)&lt;/script&gt;</div>
+  <div class="muted">Reason: No body check</div>
+  <pre style="background:#0f1115; padding:8px; border-radius:6px;">And body.x == 1</pre>
+</div>
+
+
+  </template>
+</article>
+    
+  </section>
+
+  
+
+  <div class="modal-backdrop" id="modal-root">
+    <div class="modal" id="modal-body"></div>
+  </div>
+
+  <!-- tojson filter writes a safe JS literal; LLM-sourced strings inside
+       run_data cannot break out of this <script> block. Do NOT use |safe. -->
+  <script id="run-data" type="application/json">
+    {"history": [], "severity_counts": [0, 0, 1, 0]}
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.min.js"
+          integrity="sha384-jb8JQMbMoBUzgWatfe6COACi2ljcDdZQ2OxczGA3bGNeWe+6DChMTBJemed7ZnvJ"
+          crossorigin="anonymous"></script>
+  <script>
+    (function() {
+      const data = JSON.parse(document.getElementById('run-data').textContent);
+      new Chart(document.getElementById('trend-chart'), {
+        type: 'line',
+        data: { labels: data.history.map(h => h.timestamp),
+                datasets: [
+                  { label: 'Passed', data: data.history.map(h => h.passed), borderColor: '#2aa876' },
+                  { label: 'Failed', data: data.history.map(h => h.failed), borderColor: '#e74c3c' },
+                  { label: 'P0+P1', data: data.history.map(h => h.p0p1), borderColor: '#f5a623' },
+                ] },
+        options: { plugins: { legend: { labels: { color: '#e8eaed' } } },
+                   scales: { x: { ticks: { color: '#9aa0a6' } },
+                             y: { ticks: { color: '#9aa0a6' } } } }
+      });
+      new Chart(document.getElementById('severity-chart'), {
+        type: 'doughnut',
+        data: { labels: ['P0','P1','P2','P3'],
+                datasets: [{ data: data.severity_counts,
+                             backgroundColor: ['#e74c3c','#e67e22','#f5a623','#9aa0a6'] }] },
+        options: { plugins: { legend: { labels: { color: '#e8eaed' } } } }
+      });
+      document.querySelectorAll('[data-scenario-id]').forEach(card => {
+        card.addEventListener('click', () => {
+          const id = card.getAttribute('data-scenario-id');
+          const tpl = document.getElementById('modal-tpl-' + id);
+          if (tpl) {
+            document.getElementById('modal-body').innerHTML = tpl.innerHTML;
+            document.getElementById('modal-root').classList.add('show');
+          }
+        });
+      });
+      document.getElementById('modal-root').addEventListener('click', e => {
+        if (e.target.id === 'modal-root') e.target.classList.remove('show');
+      });
+    })();
+  </script>
+</body>
+</html>

@@ -2,6 +2,22 @@
 
 All notable changes to Hangman will be documented in this file.
 
+## [unreleased] — 2026-04-24
+
+### Added
+
+- **Feature 2: BDD Dashboard** — `make bdd-dashboard` generates
+  `tests/bdd/reports/dashboard.html` using the Anthropic API to
+  evaluate the BDD suite against a 13-criterion rubric. Coverage grades
+  (endpoint + UC), trend chart from `.bdd-history/`, and per-scenario
+  modal. Default model `claude-sonnet-4-6` (~$1.11/run); configurable
+  to Haiku / Opus via `MODEL=` Make var. Python tool at
+  `backend/tools/dashboard/`; 12 modules, 11 test files (95 tests),
+  golden-file tests for deterministic modules + mocked tests for
+  LLM-adjacent code.
+
+---
+
 ## [Unreleased]
 
 ### Added

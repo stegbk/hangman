@@ -1,0 +1,9 @@
+{
+  "findings": [
+    {
+      "criterion_id": "D1",
+      "severity": "P99",
+      "problem": "invalid severity should trigger retry"
+    }
+  ]
+}

@@ -1,4 +1,4 @@
-.PHONY: install backend backend-test frontend bdd test lint typecheck verify clean
+.PHONY: install backend backend-test frontend bdd test lint typecheck verify clean bdd-dashboard
 
 # Port overrides. Default to the canonical 8000 / 3000; override on the command
 # line when those are occupied (e.g. SSH tunnel on 8000):
@@ -7,6 +7,13 @@
 # vite.config.ts and playwright.config.ts read the same env vars.
 HANGMAN_BACKEND_PORT ?= 8000
 HANGMAN_FRONTEND_PORT ?= 3000
+
+# Auto-load .env for tools that expect env vars (e.g. ANTHROPIC_API_KEY for
+# bdd-dashboard). `-include` is silent if missing; `export` propagates the
+# loaded variables to child recipes (cd backend && uv run ...). The file is
+# gitignored.
+-include .env
+export
 
 install:
 	cd backend && uv sync
@@ -52,3 +59,13 @@ bdd:
 	HANGMAN_BACKEND_PORT=$(HANGMAN_BACKEND_PORT) \
 	HANGMAN_FRONTEND_PORT=$(HANGMAN_FRONTEND_PORT) \
 	pnpm bdd
+
+.PHONY: bdd-dashboard
+bdd-dashboard:  ## Generate the BDD quality dashboard (requires ANTHROPIC_API_KEY in env or .env)
+	@if [ -z "$$ANTHROPIC_API_KEY" ]; then \
+	  echo "ERROR: ANTHROPIC_API_KEY not set. Put 'ANTHROPIC_API_KEY=sk-ant-...' in .env (gitignored) or export it in your shell."; \
+	  exit 2; \
+	fi
+	cd backend && uv run python -m tools.dashboard \
+	  --model $(or $(MODEL),claude-sonnet-4-6) \
+	  --max-workers $(or $(MAX_WORKERS),6)
