@@ -71,8 +71,14 @@ class MockAnthropicClient:
         if isinstance(response, BaseException):
             raise response
         if isinstance(response, FakeMessage):
-            if len(self.calls) > 1:
+            both_zero = (
+                response.usage.cache_creation_input_tokens == 0
+                and response.usage.cache_read_input_tokens == 0
+            )
+            if len(self.calls) > 1 and not both_zero:
                 # Simulate cache HIT on call 2+ by moving creation→read.
+                # Skip rewrite when caller explicitly set both fields to 0 —
+                # that's a broken-cache scenario the test wants to observe.
                 response.usage = FakeUsage(
                     input_tokens=response.usage.input_tokens,
                     output_tokens=response.usage.output_tokens,

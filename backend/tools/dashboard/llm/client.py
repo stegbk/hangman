@@ -33,6 +33,21 @@ from tools.dashboard.models import (
 
 _LOG = logging.getLogger(__name__)
 
+
+def _resolve_sdk_exceptions() -> tuple[type[BaseException], ...]:
+    # Catch the SDK's exception base + connection-layer errors that the
+    # SDK may not always wrap. Lazy-imported so that tests using a mock
+    # client don't pay the anthropic import cost they avoided via the
+    # dependency-injection seam.
+    try:
+        from anthropic import AnthropicError
+    except ImportError:
+        return (ConnectionError,)
+    return (AnthropicError, ConnectionError)
+
+
+_SDK_EXCEPTIONS = _resolve_sdk_exceptions()
+
 # Conservative floor. Anthropic's minimum cacheable prompt varies by model
 # per prompt-caching docs (often 1024 on newer models, but 4096 on
 # older ones).  4096 gives margin.
@@ -72,6 +87,21 @@ class CacheNotActiveError(RuntimeError):
     """First SUCCESSFUL call didn't report cache_creation_input_tokens."""
 
 
+def _assert_cache_active(result: LlmCallResult, package_id: str) -> None:
+    # Caching is active if the call either WROTE the cache
+    # (cache_creation_input_tokens > 0) or READ from it
+    # (cache_read_input_tokens > 0). A cold cache hits the write branch;
+    # a warm cache hits the read branch.
+    if result.cache_creation_input_tokens > 0 or result.cache_read_input_tokens > 0:
+        return
+    raise CacheNotActiveError(
+        f"First successful LLM call (package {package_id}) returned both "
+        f"cache_creation_input_tokens == 0 and cache_read_input_tokens == 0 "
+        f"— prompt caching is not active. Check rubric length and "
+        f"cache_control placement on system AND tools."
+    )
+
+
 class LlmEvaluator:
     def __init__(
         self,
@@ -103,38 +133,27 @@ class LlmEvaluator:
             return (), ()
 
         # Warm-up: try up to _MAX_WARMUP packages serially. As soon as one
-        # succeeds, validate cache activation against it and fall through to
-        # the parallel pool for the remainder. If the warm-up exhausts
-        # without a success, fall through anyway — the remainder runs in
-        # parallel and we accept that we have no opportunity to catch a
-        # broken cache before fanout. This caps the worst case at
-        # _MAX_WARMUP × per-call timeout instead of N × per-call timeout
-        # when every package fails.
+        # succeeds, validate cache activation and fall through to the
+        # parallel pool for the remainder. The cap prevents the all-fail
+        # case from serializing all N packages through retries.
+        #
+        # If warm-up exhausts WITHOUT a success, we still fall through to
+        # the parallel pool — but cache validation runs after the parallel
+        # results land, against the first successful result in input order.
+        # Worst-case waste if cache is broken: max_workers calls before the
+        # raise. That's preferred over serializing N timeouts.
         sequential_results: list[LlmCallResult] = []
-        last_sequential_idx = -1
+        warmup_validated_cache = False
         warmup_limit = min(_MAX_WARMUP, len(packages))
         for idx in range(warmup_limit):
             result = self._call(packages[idx])
             sequential_results.append(result)
-            last_sequential_idx = idx
             if result.succeeded:
-                # Caching is active if the call either WROTE the cache
-                # (cache_creation_input_tokens > 0) or READ from it
-                # (cache_read_input_tokens > 0).  A warm cache hits the read
-                # branch; a cold cache hits the write branch.
-                cache_active = (
-                    result.cache_creation_input_tokens > 0 or result.cache_read_input_tokens > 0
-                )
-                if not cache_active:
-                    raise CacheNotActiveError(
-                        f"First successful LLM call (package {packages[idx].id}) "
-                        f"returned both cache_creation_input_tokens == 0 and "
-                        f"cache_read_input_tokens == 0 — prompt caching is "
-                        f"not active. Check rubric length and cache_control "
-                        f"placement on system AND tools."
-                    )
+                _assert_cache_active(result, packages[idx].id)
+                warmup_validated_cache = True
                 break
 
+        last_sequential_idx = len(sequential_results) - 1
         remainder = packages[last_sequential_idx + 1 :]
 
         if remainder:
@@ -144,6 +163,17 @@ class LlmEvaluator:
             results_rest = []
 
         all_results = tuple(sequential_results + results_rest)
+
+        # If warm-up didn't witness a success, validate cache against the
+        # first successful result across the combined sequence (input
+        # order is preserved by pool.map). If no result succeeded at all,
+        # there's nothing to validate — caller sees a fully-skipped run.
+        if not warmup_validated_cache:
+            for r in all_results:
+                if r.succeeded:
+                    _assert_cache_active(r, r.package_id)
+                    break
+
         skipped = tuple(r.package_id for r in all_results if not r.succeeded)
         return all_results, skipped
 
@@ -163,7 +193,7 @@ class LlmEvaluator:
                         {"role": "user", "content": pkg.prompt_content},
                     ],
                 )
-            except Exception as exc:  # noqa: BLE001 — SDK exception taxonomy is broad
+            except _SDK_EXCEPTIONS as exc:
                 last_error = f"{type(exc).__name__}: {exc}"
                 _LOG.warning("LLM call failed for %s: %s", pkg.id, last_error)
                 break

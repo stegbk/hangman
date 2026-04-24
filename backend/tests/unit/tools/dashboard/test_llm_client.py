@@ -118,6 +118,38 @@ class TestSystemPromptAndCaching:
         # Must not raise CacheNotActiveError just because p:0 failed.
         assert any(r.succeeded for r in results)
 
+    def test_cache_validated_after_warmup_exhausts(
+        self, mock_anthropic_client, malformed_tool_input
+    ):
+        # First _MAX_WARMUP packages fail (warm-up exhausts without
+        # validating cache); a later parallel call succeeds with broken
+        # cache (cache_creation==0 AND cache_read==0). Must STILL raise
+        # CacheNotActiveError — the warm-up cap can't silently skip the
+        # cache-validation guarantee.
+        from tests.unit.tools.dashboard.conftest import (
+            FakeMessage,
+            FakeToolUseBlock,
+            FakeUsage,
+        )
+
+        broken_cache_response = FakeMessage(
+            content=[FakeToolUseBlock(name="ReportFindings", input={"findings": []})],
+            usage=FakeUsage(
+                input_tokens=1000,
+                output_tokens=200,
+                cache_creation_input_tokens=0,
+                cache_read_input_tokens=0,
+            ),
+        )
+        # Warm-up: 2 packages × (1 try + 1 retry) = 4 malformed responses,
+        # then a 3rd package succeeds in the parallel pool with broken cache.
+        mock_anthropic_client.scripted_responses.extend(
+            [malformed_tool_input] * 4 + [broken_cache_response]
+        )
+        evaluator = LlmEvaluator(client=mock_anthropic_client, max_workers=1)
+        with pytest.raises(CacheNotActiveError):
+            evaluator.evaluate((_pkg("p:0"), _pkg("p:1"), _pkg("p:2")))
+
 
 class TestValidResponseParsing:
     def test_happy_path_yields_findings(self, mock_anthropic_client, good_tool_input):
@@ -155,11 +187,24 @@ class TestMalformedRetry:
 
 class TestSdkErrorsAreSkipped:
     def test_api_exception_surfaces_as_skipped(self, mock_anthropic_client):
-        mock_anthropic_client.scripted_responses.append(RuntimeError("connection reset"))
+        from anthropic import APIConnectionError
+
+        mock_anthropic_client.scripted_responses.append(
+            APIConnectionError(request=None)  # type: ignore[arg-type]
+        )
         evaluator = LlmEvaluator(client=mock_anthropic_client, max_workers=1)
         results, skipped = evaluator.evaluate((_pkg("p:err"),))
         assert "p:err" in skipped
         assert results[0].succeeded is False
+
+    def test_unrelated_exception_propagates(self, mock_anthropic_client):
+        # AttributeError, TypeError, etc. from our own code (e.g. a
+        # mis-patched test mock) must NOT be silently swallowed — those
+        # are real bugs, not SDK errors.
+        mock_anthropic_client.scripted_responses.append(AttributeError("our bug"))
+        evaluator = LlmEvaluator(client=mock_anthropic_client, max_workers=1)
+        with pytest.raises(AttributeError, match="our bug"):
+            evaluator.evaluate((_pkg("p:bug"),))
 
     def test_all_packages_fail_returns_results_not_raises(
         self, mock_anthropic_client, malformed_tool_input

@@ -51,10 +51,14 @@ def main() -> int:
     parser.add_argument("--max-workers", default=6, type=int)
     args = parser.parse_args()
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key or not api_key.startswith("sk-ant-"):
+    # Presence-only check; let the Anthropic SDK validate the key format
+    # on first call. Anthropic uses several prefixes (sk-ant-api03-...,
+    # sk-ant-admin01-..., and may add more); locking to one would silently
+    # reject valid keys after a future format change.
+    if not os.environ.get("ANTHROPIC_API_KEY"):
         print(
-            "ERROR: ANTHROPIC_API_KEY env var is missing or malformed (expected 'sk-ant-...').",
+            "ERROR: ANTHROPIC_API_KEY env var is missing. Put it in .env "
+            "(gitignored) or export it in your shell.",
             file=sys.stderr,
         )
         return 2
