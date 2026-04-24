@@ -19,8 +19,12 @@ class TestAnalyzerPipeline:
         mock_anthropic_client,
         good_tool_input,
     ) -> None:
-        # Queue enough responses for all packages the analyzer builds.
-        for _ in range(10):
+        # Queue exactly enough responses for the packages the analyzer
+        # will build from minimal.ndjson — 1 scenario package + 1 feature
+        # package = 2 calls total.
+        parse_result = NdjsonParser().parse(minimal_ndjson_path)
+        package_count = len(Packager().make_packages(parse_result.features))
+        for _ in range(package_count):
             mock_anthropic_client.scripted_responses.append(good_tool_input)
 
         out_html = tmp_path / "dashboard.html"

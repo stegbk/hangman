@@ -26,7 +26,7 @@ class HistoryStore:
         if not history_dir.is_dir():
             return []
         entries: list[RunSummary] = []
-        for path in sorted(history_dir.glob("*.json")):
+        for path in history_dir.glob("*.json"):
             try:
                 entries.append(self._from_dict(json.loads(path.read_text())))
             except (json.JSONDecodeError, KeyError, ValueError, TypeError) as exc:

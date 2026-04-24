@@ -20,6 +20,7 @@ _UUID_SEG_RE = re.compile(
 )
 
 _REQUIRED_PRIMARIES: tuple[str, ...] = ("@happy", "@failure", "@edge")
+_REQUIRED_PRIMARIES_SET: frozenset[str] = frozenset(_REQUIRED_PRIMARIES)
 
 
 class CoverageGrader:
@@ -89,7 +90,7 @@ class CoverageGrader:
 
         if not tag_set:
             state = CoverageState.NONE
-        elif len(tag_set & set(_REQUIRED_PRIMARIES)) == len(_REQUIRED_PRIMARIES):
+        elif tag_set >= _REQUIRED_PRIMARIES_SET:
             state = CoverageState.FULL
         else:
             state = CoverageState.PARTIAL

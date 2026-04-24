@@ -59,9 +59,10 @@ def main() -> int:
         )
         return 2
 
-    if rubric_token_count() < _RUBRIC_CACHE_MIN_TOKENS:
+    token_count = rubric_token_count()
+    if token_count < _RUBRIC_CACHE_MIN_TOKENS:
         print(
-            f"ERROR: Rubric is {rubric_token_count()} tokens — below "
+            f"ERROR: Rubric is {token_count} tokens — below "
             f"{_RUBRIC_CACHE_MIN_TOKENS}-token cache floor "
             "(caching stops paying off below this).",
             file=sys.stderr,

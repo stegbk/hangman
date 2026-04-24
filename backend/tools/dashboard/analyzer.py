@@ -25,8 +25,8 @@ _SEVERITY_ORDER = {Severity.P0: 0, Severity.P1: 1, Severity.P2: 2, Severity.P3: 
 def _sort_findings(findings: list[Finding]) -> list[Finding]:
     def key(f: Finding) -> tuple[int, str, str, int]:
         line = f.scenario.line if f.scenario else (f.feature.line if f.feature else 0)
-        file = f.scenario.feature_file if f.scenario else (f.feature.file if f.feature else "")
-        return (_SEVERITY_ORDER[f.severity], f.criterion_id, file, line)
+        path = f.scenario.feature_file if f.scenario else (f.feature.file if f.feature else "")
+        return (_SEVERITY_ORDER[f.severity], f.criterion_id, path, line)
 
     return sorted(findings, key=key)
 
@@ -107,7 +107,7 @@ class Analyzer:
         outcomes = Counter(sc.outcome for sc in context.scenarios)
         finding_counts: dict[Severity, int] = dict.fromkeys(Severity, 0)
         for f in findings:
-            finding_counts[f.severity] = finding_counts.get(f.severity, 0) + 1
+            finding_counts[f.severity] += 1
         return RunSummary(
             timestamp=context.timestamp,
             total_scenarios=len(context.scenarios),

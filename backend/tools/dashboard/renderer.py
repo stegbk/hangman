@@ -14,12 +14,23 @@ from jinja2 import Environment, PackageLoader, select_autoescape
 from tools.dashboard.models import (
     AnalysisContext,
     CoverageGrade,
+    CoverageState,
     Feature,
     Finding,
     Outcome,
     RunSummary,
     Severity,
+    Step,
 )
+
+_OUTCOME_TONE: dict[Outcome, str] = {
+    Outcome.PASSED: "success",
+    Outcome.FAILED: "error",
+    Outcome.SKIPPED: "warning",
+    Outcome.NOT_RUN: "",
+    Outcome.UNKNOWN: "warning",
+}
+
 
 # Chart.js 4.5.1 SRI hash (jsdelivr CDN). Pinned; update only on version bump.
 # Obtained via: curl -sL https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.min.js | openssl dgst -sha384 -binary | openssl base64 -A
@@ -44,15 +55,15 @@ class ScenarioView:
     is_smoke: bool
     outcome: str
     tone: str
-    steps: tuple  # type: ignore[type-arg]
-    findings: tuple  # type: ignore[type-arg]
+    steps: tuple[Step, ...]
+    findings: tuple[Finding, ...]
 
 
 @dataclass(frozen=True)
 class FeatureFindingsGroup:
     file: str
     name: str
-    findings: tuple  # type: ignore[type-arg]
+    findings: tuple[Finding, ...]
 
 
 class DashboardRenderer:
@@ -124,13 +135,7 @@ class DashboardRenderer:
         return views
 
     def _outcome_tone(self, outcome: Outcome) -> str:
-        return {
-            Outcome.PASSED: "success",
-            Outcome.FAILED: "error",
-            Outcome.SKIPPED: "warning",
-            Outcome.NOT_RUN: "",
-            Outcome.UNKNOWN: "warning",
-        }[outcome]
+        return _OUTCOME_TONE[outcome]
 
     def _build_feature_finding_groups(
         self, context: AnalysisContext, findings: list[Finding]
@@ -169,9 +174,9 @@ class DashboardRenderer:
         uc_grades = [g for g in grades if g.kind == "uc"]
 
         def counts(grs: list[CoverageGrade]) -> tuple[int, int, int]:
-            full = sum(1 for g in grs if g.state.value == "full")
-            partial = sum(1 for g in grs if g.state.value == "partial")
-            none = sum(1 for g in grs if g.state.value == "none")
+            full = sum(1 for g in grs if g.state == CoverageState.FULL)
+            partial = sum(1 for g in grs if g.state == CoverageState.PARTIAL)
+            none = sum(1 for g in grs if g.state == CoverageState.NONE)
             return full, partial, none
 
         ef, ep, en = counts(endpoint_grades)

@@ -44,6 +44,12 @@ _RECOGNIZED_CRITERIA: frozenset[str] = frozenset(
 )
 _MAX_OUTPUT_TOKENS = 2048
 
+# Cap the serial warm-up that validates cache activation. If two packages
+# fail back-to-back, fall through to the parallel pool rather than
+# serializing all N packages through retries — a broken API would otherwise
+# block evaluate() for N × per-call timeout.
+_MAX_WARMUP = 2
+
 # Module-level constants for cache-prefix stability. MUST be the same
 # object on every messages.create call — don't rebuild per-call.
 _CACHED_TOOL: dict[str, Any] = {**REPORT_FINDINGS_TOOL, "cache_control": {"type": "ephemeral"}}
@@ -74,9 +80,10 @@ class LlmEvaluator:
         max_workers: int = 6,
         max_retries_per_call: int = 1,
     ) -> None:
-        if rubric_token_count() < _RUBRIC_CACHE_MIN_TOKENS:
+        token_count = rubric_token_count()
+        if token_count < _RUBRIC_CACHE_MIN_TOKENS:
             raise RubricTooShortError(
-                f"Rubric is {rubric_token_count()} tokens — below "
+                f"Rubric is {token_count} tokens — below "
                 f"{_RUBRIC_CACHE_MIN_TOKENS}-token cache floor."
             )
         if client is None:
@@ -95,24 +102,23 @@ class LlmEvaluator:
         if not packages:
             return (), ()
 
-        # Loop serially through packages until one succeeds. This lets us
-        # assert cache activation against a KNOWN-good call, not whichever
-        # package happens to be first in the list.
-        #
-        # Invariant after this loop:
-        #   sequential_results == [self._call(p) for p in packages[: last_sequential_idx + 1]]
-        #   We break on the first success after asserting cache tokens > 0.
-        #   If no package succeeds, last_sequential_idx == len(packages) - 1
-        #   and remainder is empty — no CacheNotActiveError is raised because
-        #   we have zero successful responses to witness caching against.
+        # Warm-up: try up to _MAX_WARMUP packages serially. As soon as one
+        # succeeds, validate cache activation against it and fall through to
+        # the parallel pool for the remainder. If the warm-up exhausts
+        # without a success, fall through anyway — the remainder runs in
+        # parallel and we accept that we have no opportunity to catch a
+        # broken cache before fanout. This caps the worst case at
+        # _MAX_WARMUP × per-call timeout instead of N × per-call timeout
+        # when every package fails.
         sequential_results: list[LlmCallResult] = []
         last_sequential_idx = -1
-        for idx, pkg in enumerate(packages):
-            result = self._call(pkg)
+        warmup_limit = min(_MAX_WARMUP, len(packages))
+        for idx in range(warmup_limit):
+            result = self._call(packages[idx])
             sequential_results.append(result)
             last_sequential_idx = idx
             if result.succeeded:
-                # Caching is active if the first call either WROTE the cache
+                # Caching is active if the call either WROTE the cache
                 # (cache_creation_input_tokens > 0) or READ from it
                 # (cache_read_input_tokens > 0).  A warm cache hits the read
                 # branch; a cold cache hits the write branch.
@@ -121,7 +127,7 @@ class LlmEvaluator:
                 )
                 if not cache_active:
                     raise CacheNotActiveError(
-                        f"First successful LLM call (package {pkg.id}) "
+                        f"First successful LLM call (package {packages[idx].id}) "
                         f"returned both cache_creation_input_tokens == 0 and "
                         f"cache_read_input_tokens == 0 — prompt caching is "
                         f"not active. Check rubric length and cache_control "
@@ -129,7 +135,6 @@ class LlmEvaluator:
                     )
                 break
 
-        # If every package failed, remainder is empty and we skip the pool.
         remainder = packages[last_sequential_idx + 1 :]
 
         if remainder:

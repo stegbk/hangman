@@ -177,6 +177,9 @@ class NdjsonParser:
             if "testRunStarted" in e:
                 ts: Any = e["testRunStarted"]["timestamp"]
                 seconds = int(ts["seconds"]) + int(ts.get("nanos", 0)) / 1e9
-                dt = datetime.fromtimestamp(seconds, tz=UTC)
-                return dt.isoformat().replace("+00:00", "Z")
-        return datetime.now(tz=UTC).isoformat().replace("+00:00", "Z")
+                return _to_iso_z(datetime.fromtimestamp(seconds, tz=UTC))
+        return _to_iso_z(datetime.now(tz=UTC))
+
+
+def _to_iso_z(dt: datetime) -> str:
+    return dt.isoformat().replace("+00:00", "Z")

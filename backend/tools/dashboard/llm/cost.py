@@ -28,7 +28,14 @@ def compute_cost(results: list[LlmCallResult]) -> CostReport:
         )
 
     model = succeeded[0].model
-    rates = PRICING[model]
+    # Anthropic returns disambiguated model names in responses (e.g.
+    # 'claude-sonnet-4-6-20250101'). Match via prefix; default to sonnet
+    # rates if none match — keeps a live run from blowing up over a model
+    # rename rather than a real pricing problem.
+    rates = next(
+        (r for prefix, r in PRICING.items() if model.startswith(prefix)),
+        PRICING["claude-sonnet-4-6"],
+    )
 
     total_input = sum(r.input_tokens for r in succeeded)
     total_read = sum(r.cache_read_input_tokens for r in succeeded)
