@@ -30,3 +30,7 @@ backend/hangman.db
 !.env.example
 backend/tmp_*.db
 backend/hangman.test.db*
+
+# BDD dashboard (Feature 2)
+.bdd-history/
+tests/bdd/reports/
