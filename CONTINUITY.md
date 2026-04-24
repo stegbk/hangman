@@ -53,10 +53,10 @@ Ready for **Feature 2: bdd-dashboard** (static analyzer + HTML generator matchin
 - [x] Plugins verified (superpowers + pr-review-toolkit + prd:discuss/create all exercised successfully during Feature 1)
 - [x] PRD created (`docs/prds/bdd-dashboard.md` v1.1 — 7 user stories, 10 non-goals, 13-rule starter opinion engine in Appendix B; v1.1 corrections: consume gherkinDocument from NDJSON, Chart.js pin 4.5.1 exact, scenario status rollup)
 - [x] Research artifact produced (`docs/research/2026-04-23-bdd-dashboard.md` — 5 libs in depth + 1 breadth survey; 3 load-bearing findings patched into PRD v1.1; 7 open risks documented)
-- [ ] Design guidance loaded (if UI)
-- [ ] Brainstorming complete
-- [ ] Approach comparison filled
-- [ ] Contrarian gate passed (skip | spike | council)
+- [x] Design guidance loaded — N/A: this feature is a developer tool generating a single dashboard HTML; visual direction is pre-set by the user's reference example. Per PRD §2, no user-facing product surface.
+- [x] Brainstorming complete (`docs/plans/2026-04-24-bdd-dashboard-design.md` — 13 sections, approved by KC)
+- [x] Approach comparison filled (see § "Approach Comparison" below)
+- [x] Contrarian gate passed — user-validated (Codex hung at 12min; fallback-to-user per protocol). User directed the v2 LLM pivot that made the original static-rules default the credible alternative, then explicitly rejected it. Approach comparison re-scored under v2 post-pivot.
 - [ ] Council verdict (if triggered): [approach chosen]
 - [ ] Plan written
 - [ ] Plan review loop (0 iterations) — iterate until no P0/P1/P2
@@ -75,6 +75,38 @@ Ready for **Feature 2: bdd-dashboard** (static analyzer + HTML generator matchin
 - [ ] PR created
 - [ ] PR reviews addressed
 - [ ] Branch finished
+
+---
+
+## Approach Comparison (v2 — post-pivot)
+
+### Chosen Default
+
+**Python OO package at `backend/tools/dashboard/`** that performs **LLM-based evaluation** via the Anthropic SDK. NdjsonParser + CoverageGrader (procedural, deterministic) feed a Packager that produces 33 scenario-packages + 11 feature-packages per run. LlmEvaluator dispatches all 44 packages to the Anthropic Messages API (default `claude-sonnet-4-6`, configurable) with a 13-criterion rubric in the system prompt + forced `ReportFindings` tool use + prompt caching. Results + procedural coverage grades + history flow into a Jinja-rendered single-file HTML dashboard. Golden-file tests scoped to deterministic modules only (Renderer, CoverageGrader); LLM-adjacent code tested with a MockAnthropicClient.
+
+### Best Credible Alternative
+
+**Static rule engine** (what was designed as v1 of this spec — the original "13 Rule classes implementing a `Rule` Protocol" design). Fully deterministic. No LLM cost. No network dependency. Faster (local-only). But no semantic judgment — cannot catch anti-patterns like "scenario says forfeit but only tests the happy path."
+
+### Scoring (fixed axes)
+
+| Axis                  | Default (v2 LLM)                                                         | Alternative (v1 static)                                       |
+| --------------------- | ------------------------------------------------------------------------ | ------------------------------------------------------------- |
+| Complexity            | **M** (add Packager + LlmEvaluator + Rubric + cost mgmt + mocking infra) | **M** (9 modules, 13 rule classes)                            |
+| Blast Radius          | **L** (new dev tooling; API key side-channel)                            | **L** (new dev tooling)                                       |
+| Reversibility         | **M** (refactoring LLM layer is not trivial)                             | **M** (refactoring 9 files)                                   |
+| Time to Validate      | **M** (mocked unit + 1 live integration run per iteration at ~$1/run)    | **L** (fully unit-testable)                                   |
+| User/Correctness Risk | **M** — but captures semantic-quality findings static rules cannot       | **M** — deterministic but catches only pre-hardcoded patterns |
+
+### Cheapest Falsifying Test
+
+**User direction.** The user explicitly directed the LLM pivot mid-design ("we're asking the LLM to evaluate the code... segment and package the tests in a way that they can be evaluated by an LLM, not just undergo inspection with static procedural rules"). The alternative (static rules) was the pre-pivot design; user rejected it on semantic-coverage grounds.
+
+### Contrarian verdict
+
+**VALIDATED by user direction** — Codex contrarian gate hung for 12+ minutes on an earlier attempt; fallback per council-skill protocol is user-validates. User's Q1-Q8 answers in the PRD discussion + the explicit pivot challenge constitute the user's validation of the LLM path. The alternative (static rules) was explicitly rejected.
+
+**Cost trade-off acknowledged by user:** default Sonnet 4.6 at ~$1.11/run, configurable to Haiku 4.5 ($0.37/run) for cheap iteration or Opus 4.7 ($1.86/run) for deep review.
 
 ---
 
