@@ -1,0 +1,12 @@
+{
+  "findings": [
+    {
+      "criterion_id": "D1",
+      "severity": "P2",
+      "problem": "Trivial-pass scenario",
+      "evidence": "Then the response status is 200",
+      "reason": "No body or state assertions.",
+      "fix_example": "And the response body has lives_remaining == 6"
+    }
+  ]
+}
