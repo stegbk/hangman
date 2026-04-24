@@ -43,8 +43,8 @@ Ready for **Feature 2: bdd-dashboard** (static analyzer + HTML generator matchin
 | Field     | Value                      |
 | --------- | -------------------------- |
 | Command   | /new-feature bdd-dashboard |
-| Phase     | 3 — Design                 |
-| Next step | Brainstorm approaches      |
+| Phase     | 6 — Ship                   |
+| Next step | Push branch + create PR    |
 
 ### Checklist
 
@@ -57,20 +57,20 @@ Ready for **Feature 2: bdd-dashboard** (static analyzer + HTML generator matchin
 - [x] Brainstorming complete (`docs/plans/2026-04-24-bdd-dashboard-design.md` — 13 sections, approved by KC)
 - [x] Approach comparison filled (see § "Approach Comparison" below)
 - [x] Contrarian gate passed — user-validated (Codex hung at 12min; fallback-to-user per protocol). User directed the v2 LLM pivot that made the original static-rules default the credible alternative, then explicitly rejected it. Approach comparison re-scored under v2 post-pivot.
-- [ ] Council verdict (if triggered): [approach chosen]
-- [ ] Plan written
-- [ ] Plan review loop (0 iterations) — iterate until no P0/P1/P2
-- [ ] TDD execution complete
-- [ ] Code review loop (0 iterations) — iterate until no P0/P1/P2
-- [ ] Simplified
-- [ ] Verified (tests/lint/types)
-- [ ] E2E use cases designed (Phase 3.2b)
-- [ ] E2E verified via verify-e2e agent (Phase 5.4)
-- [ ] E2E regression passed (Phase 5.4b)
-- [ ] E2E use cases graduated to tests/e2e/use-cases/ (Phase 6.2b)
-- [ ] E2E specs graduated to tests/e2e/specs/ (Phase 6.2c — if Playwright framework installed)
+- [x] Council verdict (if triggered): user-validated LLM pivot — static rules rejected
+- [x] Plan written (`docs/plans/2026-04-24-bdd-dashboard-plan.md` — 14 tasks, 8 phases, dispatch plan with serial/parallel groupings, self-review pass)
+- [x] Plan review loop (3 iterations) — PASS. Iter 1 (Codex): 3×P1 + 3×P2 (cache_control missing on tool, cache-assertion on first PACKAGE not first SUCCESS, CLI cwd-fragility, feature-findings not rendered, `|safe` XSS footgun, render/write interface inconsistency). Iter 2 (Claude + Codex): 4×P2 (prose/code contradiction on all-fail, missing all-fail test, feature-findings CSS, 4096 DRY + framing). Iter 3 (Claude + Codex): clean — EXIT CRITERIA MET.
+- [x] TDD execution complete (14 tasks via subagent-driven-development across 9 dispatch waves; 99 tests landed)
+- [x] Code review loop (2 iterations) — PASS. Iter 1: Codex (high-risk surface) + PR Review Toolkit (full feature) found 1×P1 (cache-validation gap from /simplify warm-up cap) + 2×P2 (API-key prefix too strict, broad except). Iter 2: both reviewers verdict-agree CLEAN.
+- [x] Simplified — `/simplify` pass at commit `a36df86` addressed 1×P1 (warm-up cap) + 6×P2s + 4×P3s from three parallel reviewers.
+- [x] Verified — `make verify` exit 0; backend pytest 290/290, frontend vitest 28/28, dashboard 99/99, ruff + mypy + ESLint + tsc all clean.
+- [x] E2E use cases designed — N/A: developer tooling, no user-facing surface (per design spec §9.4).
+- [x] E2E verified — N/A: developer tooling. Manual browser smoke + 2 live integration runs ($0.74/run, 90→93% cache hit) is the verification.
+- [ ] E2E regression passed (Phase 5.4b) — N/A
+- [ ] E2E use cases graduated to tests/e2e/use-cases/ (Phase 6.2b) — N/A
+- [ ] E2E specs graduated to tests/e2e/specs/ (Phase 6.2c — if Playwright framework installed) — N/A
 - [ ] Learnings documented (if any)
-- [ ] State files updated
+- [x] State files updated
 - [ ] Committed and pushed
 - [ ] PR created
 - [ ] PR reviews addressed

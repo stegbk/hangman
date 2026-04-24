@@ -33,7 +33,7 @@ Locked by PRD v2.0 + research addendum + brainstorm dialogue:
 - **Jinja2 ~3.1.6** + **anthropic >=0.97,<1** as new dev-group deps in `backend/pyproject.toml`.
 - **Chart.js 4.5.1 via CDN** (exact pin).
 - **NDJSON is the primary source of truth.** `gherkinDocument` envelopes give us the Gherkin AST for free. Orphan-file detection via filesystem glob is advisory only.
-- **LLM evaluation via Anthropic SDK, forced tool use, prompt caching.** Default `claude-sonnet-4-6`; `--model` flag accepts `claude-haiku-4-5` / `claude-opus-4-7`. Rubric ≥ 4096 tokens (caching requirement, asserted at runtime). Fixed `tool_choice={"type": "tool", "name": "ReportFindings"}` across all calls. No `thinking` parameter.
+- **LLM evaluation via Anthropic SDK, forced tool use, prompt caching.** Default `claude-sonnet-4-6`; `--model` flag accepts `claude-haiku-4-5` / `claude-opus-4-7`. Rubric ≥ 4096 tokens as a **conservative cache floor** we set ourselves (Anthropic's per-model cacheable-prompt minimum is often lower per their caching docs — 4096 guarantees caching on every model we expose). Asserted at runtime via `rubric_token_count()`. Fixed `tool_choice={"type": "tool", "name": "ReportFindings"}` across all calls. No `thinking` parameter.
 - **Two packaging levels** (brainstorm Q2 a+b): per-scenario (33 calls) + per-feature (11 calls) = 44 calls per run.
 - **Rubric + free-form** (brainstorm Q3c): the rubric lists 13 criteria; the LLM also emits "what else do you see?" findings with an LLM-chosen criterion ID.
 - **Object-oriented module structure** (brainstorm Q1c). Single-responsibility modules with typed dataclasses.
@@ -211,7 +211,7 @@ llm/ subpackage: client → {rubric, tool_schema, cost}
 - `NdjsonParser.parse()` — reads NDJSON file
 - `LlmEvaluator.evaluate()` — HTTP calls to `api.anthropic.com`
 - `HistoryStore.append/read_all` — filesystem under `.bdd-history/`
-- `DashboardRenderer.write()` — filesystem at `tests/bdd/reports/dashboard.html`
+- `DashboardRenderer.render()` — builds HTML and writes to `output_path` in one call (v2 merges render/write; test reads `output_path` back). Jinja rendering is deterministic; the filesystem write is the I/O side-effect.
 
 ---
 
@@ -447,7 +447,7 @@ For each finding:
 - fix_example: concrete Gherkin rewrite or action.
 ```
 
-**Length constraint:** the module has a `RUBRIC_TEXT: str` constant + a `rubric_token_count()` helper. At startup the Analyzer asserts `rubric_token_count() >= 4096` (Anthropic caching minimum on 4.x models). Test `test_rubric.py` enforces this.
+**Length constraint:** the module has a `RUBRIC_TEXT: str` constant + a `rubric_token_count()` helper. At startup the Analyzer asserts `rubric_token_count() >= 4096`. This is our conservative floor — Anthropic's actual minimum cacheable-prompt size is model-specific per the caching docs (often lower than 4096 on smaller models); the floor guarantees caching on every model we expose via `--model`. Test `test_rubric.py` enforces this.
 
 ### 3.6 `llm/tool_schema.py` — `ReportFindings` tool definition + Pydantic validator
 
