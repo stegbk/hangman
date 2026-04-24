@@ -253,3 +253,406 @@ Design-changing findings: 3 (Chart.js 4.4.0 → 4.5.1 bump, gherkinDocument free
 Open risks: 7.
 
 **Key finding:** cucumber-js already emits `gherkinDocument` envelopes in the NDJSON — we get the full AST for free and can drop the PRD's "regex scrape" MVP plan in favour of typed AST consumption. This is cleaner, more robust, and adds zero new dependencies. Recommend bumping the PRD to v1.1 to reflect this before Phase 3 design starts.
+
+---
+
+## Addendum — LLM evaluation path (2026-04-24)
+
+**Context:** Design pivoted from a static rule engine to an LLM-based evaluator using the Anthropic API. The 13-criterion rubric is still the scoring contract, but it is applied by a Claude model (not hand-rolled Python rules) and delivered via a forced `ReportFindings` tool call. This addendum researches every LLM-specific surface the new design touches. Pre-existing sections above remain valid; they cover the non-LLM stack (NDJSON, Jinja2, Chart.js, prior-art survey).
+
+### Libraries Touched (delta)
+
+| Library                            | Our Version  | Latest Stable                                                       | Breaking Changes Since Ours                   | Source                                                                                                         |
+| ---------------------------------- | ------------ | ------------------------------------------------------------------- | --------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| **`anthropic` Python SDK**         | n/a (to add) | 0.97.0 (2026-04-23)                                                 | Adding fresh                                  | [PyPI anthropic](https://pypi.org/project/anthropic/) (accessed 2026-04-24)                                    |
+| **Claude API `anthropic-version`** | n/a          | `2023-06-01` (stable header; SDK pins it by default)                | No; header is date-pinned and has not rotated | [SDK docs — Default headers](https://platform.claude.com/docs/en/api/sdks/python) (accessed 2026-04-24)        |
+| **Claude models**                  | n/a          | `claude-opus-4-7`, `claude-sonnet-4-6`, `claude-haiku-4-5-20251001` | N/A (first adoption)                          | [Models overview](https://platform.claude.com/docs/en/docs/about-claude/models/overview) (accessed 2026-04-24) |
+
+---
+
+### 1. `anthropic` Python SDK
+
+**Versions:** ours=none (adding fresh), latest=**0.97.0** (released 2026-04-23 on PyPI — same day as the initial brief).
+
+**Minimum Python:** `>=3.9`. Our runtime is 3.12 → compatible; install from the default group in `backend/pyproject.toml` `[dependency-groups.dashboard]` alongside Jinja2. No stdlib compatibility shim needed.
+
+**Breaking changes since ours:** N/A (net-new). SDK follows SemVer but documents that minor bumps may include type-only or internal-path changes — pin a conservative range `"anthropic>=0.97,<1.0"`.
+
+**Recommended pattern (verified from official SDK docs):**
+
+```python
+import os
+from anthropic import Anthropic
+
+client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+
+response = client.messages.create(
+    model="claude-sonnet-4-6",
+    max_tokens=1024,
+    system=[...],        # list[dict] with cache_control on rubric block
+    tools=[REPORT_TOOL], # ReportFindings schema with cache_control
+    tool_choice={"type": "tool", "name": "ReportFindings"},
+    messages=[{"role": "user", "content": "<scenario json>"}],
+)
+# response.content -> list[ContentBlock]; look for block.type == "tool_use"
+```
+
+**Sync vs async:** Both provided. `Anthropic` (sync) and `AsyncAnthropic` (async). For our 44-call batch, **sync + bounded concurrency via `concurrent.futures.ThreadPoolExecutor`** is simpler than asyncio and matches stdlib parity; async adds an event loop the rest of the codebase doesn't have. Recommend sync + pool size 5–8 (well under Tier-2 Sonnet RPM of 1,000). No need for `aiohttp` extras.
+
+**Retries:** SDK retries **2 times by default** with exponential backoff on: connection errors, 408, 409, 429, and ≥500. Configurable via `Anthropic(max_retries=N)` or per-call `client.with_options(max_retries=N).messages.create(...)`. `retry-after` header is honored on 429. Errors surface as typed exceptions: `anthropic.RateLimitError` (429), `anthropic.APIConnectionError`, `anthropic.APITimeoutError`, `anthropic.APIStatusError` (generic).
+
+**Timeouts:** Default 10 minutes. Overridable with `Anthropic(timeout=20.0)` or `httpx.Timeout(60.0, read=5.0, write=10.0, connect=2.0)`. For our rubric calls (short output, tool-use JSON) a 60–120s per-call timeout is generous.
+
+**Import path for Messages API + tool use:** Stable — `client.messages.create(...)` with top-level `tools=[...]`, `tool_choice={...}`, and `system=[...]`. The experimental `client.beta.messages.tool_runner(...)` + `@beta_tool` decorator exists, but it drives an agentic loop with auto tool-execution — **not what we want.** Our use is single-turn forced structured output (the LLM calls exactly one tool once and we collect its `input` dict). Use the plain `messages.create` path.
+
+**Sources:**
+
+1. [Anthropic Python SDK on PyPI — 0.97.0 release metadata](https://pypi.org/project/anthropic/) — accessed 2026-04-24
+2. [Official SDK reference — sync/async, retries, timeouts](https://platform.claude.com/docs/en/api/sdks/python) — accessed 2026-04-24
+3. [anthropic-sdk-python GitHub repo](https://github.com/anthropics/anthropic-sdk-python) — accessed 2026-04-24
+
+**Design impact:**
+
+- Add `"anthropic>=0.97,<1.0"` to `backend/pyproject.toml` — same dependency group as Jinja2 (dashboard-only, not a runtime dep of the FastAPI app).
+- Use sync `Anthropic` client; wrap in a `ClaudeEvaluator` class with a single `evaluate(scenario_or_feature) -> list[Finding]` method for testability.
+- Leave SDK's default `max_retries=2` in place; do NOT reduce it. Add one layer of our own around the evaluator that catches `anthropic.APIError` subclasses and degrades to "LLM unavailable — skipping opinion engine, emitting bare results section" (non-fatal, preserves the value of the deterministic dashboard half).
+- Concurrency: use `concurrent.futures.ThreadPoolExecutor(max_workers=6)` to issue the 44 calls in parallel. A semaphore is unnecessary at this scale; the SDK's internal backoff handles transient 429s.
+- Model ID: plumb `--model` CLI flag through to the evaluator; default to `"claude-sonnet-4-6"`. Accept alias form (no dated suffix) so KC can pass `--model haiku` or `--model opus` and we map to the full IDs.
+
+**Test implication:**
+
+- Unit tests mock `anthropic.Anthropic` (the SDK is a legitimate external API — per `testing.md` mocking rules, Anthropic is Stripe/OpenAI-adjacent, mock it).
+- One integration test (opt-in via `ANTHROPIC_API_KEY` env; skipped in CI without the key) verifies a live round-trip with a tiny rubric over a canned scenario and asserts the returned Finding set parses cleanly.
+- Add a unit test that exercises the "SDK raises `RateLimitError`" path to confirm we catch + degrade to no-opinion-engine mode rather than crashing the dashboard build.
+- Add a unit test that exercises the "SDK raises `APIConnectionError`" path (offline mode) with the same degradation.
+
+---
+
+### 2. Prompt caching (`cache_control: {"type": "ephemeral"}`)
+
+**Confirmed mechanics (from live docs):**
+
+- **Attach points:** Tools array, System array, and individual Messages content blocks. Cache order is **Tools → System → Messages** — anything before your last `cache_control` breakpoint gets cached.
+- **Breakpoints:** Up to **4 explicit `cache_control` markers per request.** Placement must follow cache order (a breakpoint on system implicitly caches the tools above it). There is also an "automatic" top-level `cache_control` field on the request that applies to the last cacheable block, but explicit placement is clearer and recommended for our case.
+- **TTL:** Default **5 minutes** (`"ttl"` field absent or set to 5m). Optional **1 hour** via `{"type": "ephemeral", "ttl": "1h"}` at 2x base input token price per write (vs 1.25x for 5m). When mixing TTLs in one prompt, longer-TTL entries must appear first in the hierarchy.
+- **Cache-read discount:** **0.1× base input token price (90% off).** Cache-write surcharge: 1.25× for 5m, 2.0× for 1h. Cache reads do NOT count against ITPM for 4.x models (older models marked † still count them).
+- **Minimum cacheable length:** **4,096 input tokens** for Opus 4.7, Opus 4.6, Sonnet 4.6, Haiku 4.5 (all the models we'd use). Below this, `cache_control` silently no-ops (check `usage.cache_creation_input_tokens` + `usage.cache_read_input_tokens` to verify — both zero = fell short).
+- **Lookback window:** 20 blocks per breakpoint.
+- **Invalidation rules (critical for our design):**
+  - Changing tool definitions invalidates tools + system + messages.
+  - Changing `tool_choice` invalidates tools + system, but NOT messages.
+  - Changing images or system content invalidates tools + system.
+  - Changing the variable user message only invalidates that message's cache layer — upstream blocks stay hot.
+- **Workspace isolation (2026-02-05 change):** Caches are isolated per workspace, not per organization. Not relevant for our single-user local dev tool; flagged for completeness.
+
+**Cache hit verification:**
+
+```python
+print(response.usage.cache_read_input_tokens)    # >0 on a hit
+print(response.usage.cache_creation_input_tokens) # >0 on the first call only
+```
+
+**Recommended pattern for our use (confirmed best practice):**
+
+Put the 13-criterion rubric in the **system array** as one large text block with `cache_control: {"type": "ephemeral"}` at its end. Put the `ReportFindings` tool definition in **tools** with `cache_control` on it. The per-scenario variable payload (scenario name, steps, pass/fail, AST snippet) goes in the **user message without** `cache_control`. This yields a hot cache for the rubric + tool across all 44 calls in a single run (well within the 5-minute TTL for 44 parallel calls completing in < 60s). First call pays 1.25× write; remaining 43 calls pay 0.1× read.
+
+**Sources:**
+
+1. [Prompt caching — Claude API docs](https://platform.claude.com/docs/en/docs/build-with-claude/prompt-caching) — accessed 2026-04-24
+2. [Hacker News — community verification of Anthropic cache breakpoints / 90% savings](https://news.ycombinator.com/item?id=47363074) — accessed 2026-04-24
+3. [The IllusionCloud Blog — cache breakpoint depth patterns (2026-01)](https://blog.illusioncloud.biz/2026/01/13/prompt-caching-anthropic-cache-breakpoints/) — accessed 2026-04-24
+
+**Design impact:**
+
+- **Minimum rubric length matters:** The rubric MUST exceed **4,096 tokens** to be cacheable on Sonnet 4.6 / Haiku 4.5 / Opus 4.7. At ~300 words per criterion × 13 criteria ≈ 3,900 words ≈ 5,000 tokens — almost certainly fits naturally. If a future PR compacts the rubric to under 4,096 tokens, caching silently stops working and cost jumps 3–4× per run. **Add a length guard + emit a warning if `cache_creation_input_tokens == 0` on the first call.**
+- **Two breakpoints:** one on the tool schema, one at the end of the system rubric block. Leaves 2 breakpoints free for future expansion.
+- **5-minute TTL is sufficient** for a local run (all 44 calls finish inside 1 minute with parallelism). Do NOT pay the 2× surcharge for 1h TTL — YAGNI.
+- **Rubric edit invalidates cache mid-run:** the rubric text is static across a single run, so this is only a risk if someone edits while the tool is executing. Not a real concern.
+- **Tool_choice change = system cache invalidation:** Keep `tool_choice` fixed at `{"type": "tool", "name": "ReportFindings"}` across all 44 calls. Do not vary it per call — would trash the system+tools cache.
+
+**Test implication:**
+
+- Unit test: mock the SDK response's `usage` object and assert our evaluator reads `cache_read_input_tokens` and logs cache-hit-rate at the end of the run (observability).
+- Unit test: the prompt-assembly function emits exactly 2 `cache_control` markers in the right places.
+- Integration test (opt-in): run evaluator twice in sequence against the same rubric + tool; second run reports `cache_read_input_tokens > 0` (verifies real cache hit, not just that we asked for it).
+
+---
+
+### 3. Tool use / structured output (forced `ReportFindings` tool)
+
+**Confirmed mechanics:**
+
+- **Tool definition shape:**
+
+  ```python
+  REPORT_TOOL = {
+      "name": "ReportFindings",
+      "description": "Report BDD rubric findings for this scenario/feature. Use exactly once.",
+      "input_schema": {
+          "type": "object",
+          "properties": {
+              "findings": {
+                  "type": "array",
+                  "items": {
+                      "type": "object",
+                      "properties": {
+                          "rule_id": {"type": "string", "enum": ["D1", "D2", ...]},
+                          "severity": {"type": "string", "enum": ["pass", "warn", "fail"]},
+                          "message": {"type": "string"},
+                          "quote": {"type": "string"},
+                      },
+                      "required": ["rule_id", "severity", "message"],
+                  }
+              }
+          },
+          "required": ["findings"],
+      },
+      "cache_control": {"type": "ephemeral"},
+  }
+  ```
+
+- **Forcing the tool:** `tool_choice={"type": "tool", "name": "ReportFindings"}` forces Claude to call this exact tool. Per docs: when `tool_choice` is `any` or `tool`, the API prefills the assistant message to force a tool call — **the model emits no natural-language preamble, only tool_use blocks.** This is exactly the shape we want.
+- **Response shape:** `response.content` is `list[ContentBlock]`. With forced tool use, the only block we expect is `{"type": "tool_use", "id": "toolu_...", "name": "ReportFindings", "input": {"findings": [...]}}`. `response.stop_reason == "tool_use"`.
+- **Strict tool use (`strict: true`):** Optional flag that guarantees tool inputs match the schema exactly. Trade-offs: no recursive schemas, must use `additionalProperties: false`, may hit "schema is too complex" errors if findings array grows too nested. For our flat-ish schema (array of 4-field objects), `strict: true` is a cheap correctness win — **enable it.**
+- **Error modes (observed):**
+  - If the model doesn't return tool_use (rare with forced tool_choice but possible on refusal / overlong scenario): `response.content[0].type == "text"`. **Handle this by treating it as "no findings" + logging the raw text for diagnostics.**
+  - If schema validation fails (possible without `strict: true`): the `input` dict may be malformed. Pydantic-validate on our side anyway (defense in depth).
+  - `stop_reason == "max_tokens"`: truncated mid-tool-call. Bump `max_tokens` (1024 → 4096 for long findings lists).
+- **Extended thinking + forced tool use incompatibility:** `tool_choice: {"type": "tool", "name": "..."}` is **NOT supported** with extended thinking on Sonnet 4.6 / Haiku 4.5 (the Opus 4.7 model uses "adaptive thinking" which IS supported). Since we don't need extended thinking for this task (it's a structured classification, not multi-step reasoning), this is a non-issue — just do not enable `thinking` on the request.
+
+**Pydantic-friendly pattern:**
+
+```python
+from pydantic import BaseModel
+
+class Finding(BaseModel):
+    rule_id: Literal["D1", "D2", "D3", "D4", "D5", "D6", "H1", "H2", "H3", "H4", "H5", "H6", "H7"]
+    severity: Literal["pass", "warn", "fail"]
+    message: str
+    quote: str | None = None
+
+class ReportFindingsInput(BaseModel):
+    findings: list[Finding]
+
+# After call:
+tool_block = next(b for b in response.content if b.type == "tool_use")
+findings = ReportFindingsInput.model_validate(tool_block.input).findings
+```
+
+Generate the JSON schema from the Pydantic model via `ReportFindingsInput.model_json_schema()` to keep one source of truth. This is the standard pattern per the community best-practices article.
+
+**Sources:**
+
+1. [Tool use overview — Claude API docs](https://platform.claude.com/docs/en/docs/build-with-claude/tool-use/overview) — accessed 2026-04-24
+2. [Define tools — tool_choice semantics and forced tool use](https://platform.claude.com/docs/en/agents-and-tools/tool-use/define-tools) — accessed 2026-04-24
+3. [How tool use works — stop_reason and content block shapes](https://platform.claude.com/docs/en/agents-and-tools/tool-use/how-tool-use-works) — accessed 2026-04-24
+4. [Agenta blog — structured outputs + function calling best practices (2026)](https://agenta.ai/blog/the-guide-to-structured-outputs-and-function-calling-with-llms) — accessed 2026-04-24
+
+**Design impact:**
+
+- Use `tool_choice={"type": "tool", "name": "ReportFindings"}` — not `"any"` — so there is exactly one tool in the toolset and the model is pinned to it.
+- Set `"strict": true` on the tool definition. The 13-rule, 4-field-per-finding schema is well under complexity limits.
+- Generate the `input_schema` from a Pydantic `ReportFindingsInput` model via `.model_json_schema()`; validate the response `input` dict through the same Pydantic model before converting to dataclasses. Two wins: (a) single source of truth, (b) defense-in-depth against schema drift.
+- Handle the `text`-response escape hatch: if no `tool_use` block appears, log + emit an empty findings list for that scenario (do not crash the whole dashboard build).
+- Do NOT enable extended thinking on any request — forced tool choice is incompatible on Sonnet/Haiku 4.x.
+
+**Test implication:**
+
+- Unit test: "tool_use block found → findings parsed cleanly" (golden happy-path).
+- Unit test: "only text block → empty findings returned + warning logged" (degradation path).
+- Unit test: "max_tokens truncation → raises diagnostic error with scenario ID" (we need to know which call was clipped).
+- Unit test: "malformed `input` dict (bad rule_id enum) → Pydantic ValidationError surfaced with scenario context."
+- The Pydantic model doubles as a testable contract for the schema itself.
+
+---
+
+### 4. Model selection (Opus 4.7 / Sonnet 4.6 / Haiku 4.5)
+
+**Confirmed specs (from Models overview):**
+
+| Model                 | API ID                      | Alias               | Context window | Max output | Input $/MTok | Output $/MTok |
+| --------------------- | --------------------------- | ------------------- | -------------- | ---------- | -----------: | ------------: |
+| **Claude Opus 4.7**   | `claude-opus-4-7`           | `claude-opus-4-7`   | 1M tokens      | 128K       |           $5 |           $25 |
+| **Claude Sonnet 4.6** | `claude-sonnet-4-6`         | `claude-sonnet-4-6` | 1M tokens      | 64K        |           $3 |           $15 |
+| **Claude Haiku 4.5**  | `claude-haiku-4-5-20251001` | `claude-haiku-4-5`  | 200K tokens    | 64K        |           $1 |            $5 |
+
+Prompt caching:
+
+- Cached **write** (5m TTL): 1.25× input price (e.g., Sonnet $3.75/MTok, Haiku $1.25/MTok, Opus $6.25/MTok).
+- Cached **read**: 0.1× input price (Sonnet $0.30/MTok, Haiku $0.10/MTok, Opus $0.50/MTok).
+
+**Recommended use-case fit (per Anthropic's own guidance + our task shape):**
+
+| Use-case signal                                    | Best model                        | Why                                                                 |
+| -------------------------------------------------- | --------------------------------- | ------------------------------------------------------------------- |
+| Cheap cycle during dev, quick feedback             | **Haiku 4.5** (`--model haiku`)   | Fastest; "near-frontier intelligence"; 10× cheaper output than Opus |
+| Default for normal runs                            | **Sonnet 4.6** (`--model sonnet`) | Best speed/intelligence balance; 200K-token rubric fits easily      |
+| Deep-dive run when findings look shallow/incorrect | **Opus 4.7** (`--model opus`)     | Most capable; highest fidelity; use when cost is justified          |
+
+**Context-window fit:** Our prompts are small (rubric ~5K tokens + per-scenario payload ~2K tokens + tool definition ~1K). Even Haiku's 200K window is ~25× what we need. No model is excluded on size.
+
+**Sources:**
+
+1. [Claude Models overview (pricing, context, IDs)](https://platform.claude.com/docs/en/docs/about-claude/models/overview) — accessed 2026-04-24
+2. [Prompt caching docs (cached read/write multipliers)](https://platform.claude.com/docs/en/docs/build-with-claude/prompt-caching) — accessed 2026-04-24
+
+**Design impact:**
+
+- Default `--model sonnet` (`claude-sonnet-4-6`). Aliases: `haiku` → `claude-haiku-4-5`, `opus` → `claude-opus-4-7`, plus pass-through for any literal `claude-*` ID.
+- Validate unknown model names at CLI-parse time (not inside the SDK call) to fail fast with a helpful message.
+- Note in design: Haiku is compatible with everything we need (forced tool use + prompt caching ≥ 4,096 tokens + 200K context). No capability-gating between the three models for our workload.
+
+**Test implication:**
+
+- Unit test: CLI flag `--model haiku` resolves to `claude-haiku-4-5`; `--model opus` → `claude-opus-4-7`; unknown alias → clear error.
+- Parametrize the evaluator unit tests over all three model IDs (with mocked SDK) to confirm no model-specific branching slips in.
+
+---
+
+### 5. Rate limits + retries for a 44-call burst
+
+**Confirmed limits (standard Tier; worst-case model for our burst):**
+
+| Tier  | Model      | RPM   | ITPM    | OTPM   |
+| ----- | ---------- | ----- | ------- | ------ |
+| **1** | Sonnet 4.x | 50    | 30,000  | 8,000  |
+| **1** | Haiku 4.5  | 50    | 50,000  | 10,000 |
+| **1** | Opus 4.x   | 50    | 30,000  | 8,000  |
+| **2** | Sonnet 4.x | 1,000 | 450,000 | 90,000 |
+| **2** | Haiku 4.5  | 1,000 | 450,000 | 90,000 |
+| **2** | Opus 4.x   | 1,000 | 450,000 | 90,000 |
+
+**Cached input tokens do NOT count against ITPM for 4.x models** — a key multiplier. With our rubric cached, the effective ITPM budget goes ~5× further.
+
+**Our 44-call burst profile:**
+
+- 44 calls × ~2K uncached input + ~5K cached read input per call ≈ 88K uncached + 220K cached input tokens total per run. Only 88K + 88K (cache create amortized) counts against ITPM.
+- 44 × ~1K output ≈ 44K output tokens per run.
+- At Tier 1 Sonnet: 30K ITPM means the full run's 88K ITPM-counted input would take ~3 minutes if issued serially. At Tier 2, < 12s. **Tier 2 is the comfortable floor.**
+- RPM: 44 requests in ~60s = 0.73 RPS ≈ 44 RPM. Fits Tier 1's 50 RPM with no headroom; Tier 2's 1,000 RPM is trivial.
+
+**SDK behavior on 429:**
+
+- Raises `anthropic.RateLimitError` after exhausting retries (default 2).
+- `retry-after` header honored during retry backoff.
+- Response headers `anthropic-ratelimit-{requests,input-tokens,output-tokens}-{limit,remaining,reset}` provide live budget (accessible via `client.messages.with_raw_response.create(...)` + `.headers.get(...)`).
+
+**Concurrency recommendation:**
+
+- **Sequential + SDK retries:** ~60s per run on Tier 2 Sonnet (serial latency dominated by Sonnet response time).
+- **Bounded parallelism** (`ThreadPoolExecutor(max_workers=6)`): ~10s per run on Tier 2. Simpler than async; no event loop dependency; still headroom on RPM.
+- **Avoid unbounded parallelism:** At Tier 1 (50 RPM), 44 concurrent calls fire past the per-second limit (which the docs call out is enforced as ~1 RPS for 60 RPM). Stick with pool size ≤ 8 to be safe across tiers.
+- **No first-party `anthropic-client` concurrency helper** exists (beyond the `Message Batches API`, which is async, queued, and 24h-SLA — not appropriate for an interactive `make dashboard` run). Confirmed not applicable.
+
+**Sources:**
+
+1. [Rate limits — Claude API docs (tiers, RPM/ITPM/OTPM)](https://platform.claude.com/docs/en/api/rate-limits) — accessed 2026-04-24
+2. [Python SDK docs — retries, timeouts, error types](https://platform.claude.com/docs/en/api/sdks/python) — accessed 2026-04-24
+
+**Design impact:**
+
+- Document **Tier 2 as the minimum supported tier** in the feature README + CLI error message (Tier 1 works, but ITPM serializes the burst into a multi-minute wait; poor UX).
+- Concurrency: `ThreadPoolExecutor(max_workers=6)`. Rely on the SDK's `max_retries=2` default; do NOT reduce it and do NOT try to hand-roll backoff on top of it (common mistake — double-backoff thrashes).
+- Rate-limit error handling: on `RateLimitError` after SDK retries exhaust, **log once, skip that scenario, continue the run**, and emit a warning banner in the dashboard "N scenarios skipped due to rate limiting — rerun `make dashboard`."
+- Plumb `retry-after` / `anthropic-ratelimit-*` headers into the evaluator's diagnostic log (opt-in via `--verbose`) for users who hit tier limits and need to understand why.
+
+**Test implication:**
+
+- Unit test: `RateLimitError` raised by the SDK mock → evaluator marks that scenario as "rate-limited" in its report, does NOT crash the batch.
+- Unit test: `ThreadPoolExecutor` shutdown on KeyboardInterrupt (Ctrl+C during run) cancels outstanding calls cleanly.
+- Observability test: the evaluator logs the final run's `anthropic-ratelimit-input-tokens-remaining` so a developer can spot "I'm close to my tier limit" before it bites.
+
+---
+
+### 6. Streaming vs non-streaming
+
+**Confirmed:** Streaming is fully supported via `client.messages.stream(...)` (helper) or `create(..., stream=True)` (iterator). It's designed for progressive text display.
+
+**Our use case:** Each call is one short JSON tool-use output (≤ 1K tokens). We don't render the response to the user incrementally — we parse the final `tool_use` block and move on. Streaming offers no UX value here.
+
+**Trade-offs of streaming for our task:**
+
+- ✅ Slightly lower TTFT perceived latency (irrelevant for non-interactive `make` step).
+- ✅ Avoids the SDK's 10-minute long-request `ValueError` (irrelevant — our calls are ≤ 30s even on Opus).
+- ❌ Harder to consume `tool_use` content from the stream (requires accumulating fragments and parsing at `message_stop`).
+- ❌ Interacts awkwardly with `ThreadPoolExecutor` (each thread owns an open SSE connection for the call's duration).
+
+**Sources:**
+
+1. [Python SDK docs — streaming section](https://platform.claude.com/docs/en/api/sdks/python) — accessed 2026-04-24
+
+**Design impact:** Use **non-streaming** `messages.create(stream=False)` (the default). No design change needed — just document the choice in the evaluator module docstring so a future reader doesn't "optimize" it to streaming and regress maintainability.
+
+**Test implication:** None beyond "we don't test streaming." Standard coverage sufficient.
+
+---
+
+### 7. Cost estimation per run
+
+**Assumptions (from the caller):** ~150K total input tokens + ~50K total output tokens per full run (across all 44 calls).
+
+**Assumptions (from us, confirmed against the rubric math):**
+
+- Rubric ~5K tokens, cached. Sent on every call but only the first call pays the 1.25× cache-write surcharge; remaining 43 read at 0.1×.
+- Tool schema ~1K tokens, cached with the rubric (same breakpoint group).
+- Per-call variable payload ~2K tokens × 44 calls ≈ 88K uncached input.
+- Cache write (one-shot): ~6K tokens. Cache read: ~6K × 43 = ~258K tokens.
+- Grand totals: ~88K uncached input + ~6K cache-write + ~258K cache-read + ~50K output.
+
+**Cost per full run:**
+
+| Model          | Uncached input (88K × base) | Cache write (6K × 1.25×) | Cache read (258K × 0.1×) |  Output (50K × out$) | **Total/run** |
+| -------------- | --------------------------: | -----------------------: | -----------------------: | -------------------: | ------------: |
+| **Haiku 4.5**  |         88K × $1/M = $0.088 |    6K × $1.25/M = $0.008 |  258K × $0.10/M = $0.026 |  50K × $5/M = $0.250 |    **~$0.37** |
+| **Sonnet 4.6** |         88K × $3/M = $0.264 |    6K × $3.75/M = $0.023 |  258K × $0.30/M = $0.077 | 50K × $15/M = $0.750 |    **~$1.11** |
+| **Opus 4.7**   |         88K × $5/M = $0.440 |    6K × $6.25/M = $0.038 |  258K × $0.50/M = $0.129 | 50K × $25/M = $1.250 |    **~$1.86** |
+
+**Sanity check against uncached baseline** (what it would cost without prompt caching — rubric & tool sent fully on every call, pushing input tokens to ~350K):
+
+| Model      | Uncached total/run (no caching) | With caching (above) | Savings |
+| ---------- | ------------------------------: | -------------------: | ------: |
+| Haiku 4.5  |                          ~$0.60 |               ~$0.37 |    ~38% |
+| Sonnet 4.6 |                          ~$1.80 |               ~$1.11 |    ~38% |
+| Opus 4.7   |                          ~$3.00 |               ~$1.86 |    ~38% |
+
+Savings are dominated by rubric re-transmission avoidance — the full 90% cache-read discount only applies to the cached portion, so the blended savings for this workload come in around 35–40%. Still, Sonnet at **~$1.11/run** and Haiku at **~$0.37/run** is well inside "iterate freely" territory for a dev tool. Opus at **~$1.86/run** is reasonable for deep-dive runs.
+
+**Sources:**
+
+1. [Claude Models overview — pricing per model](https://platform.claude.com/docs/en/docs/about-claude/models/overview) — accessed 2026-04-24
+2. [Prompt caching — cache read/write multipliers](https://platform.claude.com/docs/en/docs/build-with-claude/prompt-caching) — accessed 2026-04-24
+
+**Design impact:**
+
+- Display an estimated cost + the observed `usage` totals at the end of each `make dashboard` run. Developers learn their own cost curve; avoids nasty surprises.
+- CLI flag defaults make economic sense: `sonnet` is the right default for routine use; `--model haiku` for fast iteration; `--model opus` only when the rubric findings look unreliable and you want to burn 2× the budget to double-check.
+- `--no-llm` flag: emit the dashboard with the deterministic half only (no opinion engine). Free. Useful for CI or when `ANTHROPIC_API_KEY` is absent.
+
+**Test implication:**
+
+- Unit test: the cost-display function reads the SDK's `usage` object (including `cache_creation_input_tokens` and `cache_read_input_tokens`) and produces a rounded dollar estimate using pinned per-model price constants. Guards against future maintainer forgetting to update prices when Anthropic changes them (we will catch drift; the printed number becomes visibly wrong).
+- Keep model prices in a single `PRICING: dict[str, tuple[float, float]]` module constant so it's trivially updatable in one place.
+
+---
+
+### Addendum summary — load-bearing findings
+
+Three additional findings that should drive PRD v2.0 corrections beyond what the caller already flagged (API key required, tool use for structured findings, prompt caching for cost control):
+
+1. **Rubric length must exceed 4,096 tokens to be cacheable on 4.x models.** The 13-criterion rubric is naturally in this range (~5K tokens), but a future compaction PR could silently drop caching and triple the per-run cost. PRD v2.0 should specify a minimum rubric token budget + a runtime assertion (`raise if usage.cache_creation_input_tokens == 0 on the first call`).
+2. **Forced tool use is incompatible with extended thinking on Sonnet 4.6 / Haiku 4.5.** We do not need extended thinking for this task, but PRD v2.0 should explicitly prohibit enabling `thinking` on requests — otherwise the model returns a 400 and the whole run fails. Quiet trap.
+3. **Tool-choice changes invalidate the system cache.** Keep `tool_choice={"type": "tool", "name": "ReportFindings"}` fixed across every call in a run. PRD v2.0 should call this out as a non-negotiable constraint on any future refactor that "might want to sometimes let the model skip the tool."
+
+Two secondary PRD-level facts worth capturing:
+
+4. **Default to Sonnet 4.6, not Opus 4.7.** Caller wording ("Sonnet 4.6 default, Haiku 4.5 cheap, Opus 4.7 deep") matches the research-derived cost/value curve — confirm this in the PRD.
+5. **Tier 2 is the minimum comfortable API tier.** Tier 1's 30K ITPM serializes the burst into a multi-minute wait. PRD v2.0 should note this as an operational requirement.
+
+### New open risks (append to existing section, numbered 8+)
+
+8. **Prompt-caching hit-rate collapses if the rubric or tool schema is edited during development.** Mid-session rubric tweaks invalidate the cache for 5 minutes, which is usually fine, but a bulk find-replace across the rubric during a `make dashboard` run will force every call to re-write. **Mitigation:** log cache hit-rate at end of run (`cache_read / (cache_read + cache_create + uncached)`); warn when < 80% on a run with > 10 calls. Also add a PRD note: "treat the rubric as a static artifact during a run; edit only between runs."
+9. **Anthropic model deprecations can invalidate our defaults.** Sonnet 4 / Opus 4 (no suffix) are deprecated and retire 2026-06-15. We default to Sonnet 4.6 / Opus 4.7 which are current — but model deprecation is an ongoing concern. **Mitigation:** pin the exact model alias in a module constant; when a deprecation notice lands, update one line.
+10. **`ANTHROPIC_API_KEY` missing in CI breaks dashboard generation.** Unless the `--no-llm` flag is wired and documented, users in environments without the key hit an `AuthenticationError` at first SDK call. **Mitigation:** fail fast at CLI start (check env var before any work) with a helpful message pointing to `--no-llm`.
+11. **SDK `max_retries=2` may be silently insufficient on Tier 1.** If the user is on Tier 1 and their rubric + burst push them over ITPM, the SDK's 2 retries are not enough to ride out the 60-second rate-limit window. **Mitigation:** catch `RateLimitError`, log the failed scenarios, continue; emit a banner in the dashboard telling them to upgrade tier or rerun.
+12. **No official Python binding of the Cucumber Messages schema still applies** — same as risk #7 in the original brief. Not LLM-specific but remains true after the LLM pivot.
+13. **Workspace-level cache isolation (2026-02-05 change)** — caches are per-workspace now. Not relevant for local single-user use, but if the tool ever runs in a shared CI workspace with multiple feature branches generating dashboards, their caches are isolated. No action required today; flagged for future context.
