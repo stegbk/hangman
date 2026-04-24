@@ -1,0 +1,18 @@
+<h2>{{ sc.name }}</h2>
+<div class="muted">{{ sc.feature_file }}:{{ sc.line }} · {{ sc.outcome }}</div>
+<h3>Steps</h3>
+<pre>{% for step in sc.steps %}{{ step.keyword }}{{ step.text }}
+{% endfor %}</pre>
+{% if sc.findings %}
+<h3>Findings</h3>
+{% for f in sc.findings %}
+<div style="margin:12px 0;">
+  <strong>{{ f.severity }}</strong> {{ f.criterion_id }}
+  {% if not f.is_recognized_criterion %}⚠ LLM-invented{% endif %}
+  <div>{{ f.problem }}</div>
+  <div class="muted">Evidence: {{ f.evidence }}</div>
+  <div class="muted">Reason: {{ f.reason }}</div>
+  <pre style="background:#0f1115; padding:8px; border-radius:6px;">{{ f.fix_example }}</pre>
+</div>
+{% endfor %}
+{% endif %}
