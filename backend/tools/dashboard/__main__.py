@@ -12,7 +12,11 @@ import os
 import sys
 from pathlib import Path
 
-from tools.dashboard.analyzer import Analyzer
+from tools.dashboard.analyzer import (
+    Analyzer,
+    build_coverage_summary,
+    load_coverage_context_if_fresh,
+)
 from tools.dashboard.coverage import CoverageGrader
 from tools.dashboard.history import HistoryStore
 from tools.dashboard.llm.client import _RUBRIC_CACHE_MIN_TOKENS, LlmEvaluator
@@ -73,11 +77,22 @@ def main() -> int:
         )
         return 3
 
+    # Load coverage context ONCE; pass (a) the derived summary string into
+    # the cached LLM system prompt for D7 coverage-aware findings, and
+    # (b) the raw context to Analyzer.run() so the renderer can render
+    # the "Code coverage" card. Avoids loading coverage.json twice.
+    coverage_context = load_coverage_context_if_fresh(args.ndjson)
+    coverage_summary = build_coverage_summary(coverage_context) if coverage_context else ""
+
     analyzer = Analyzer(
         parser=NdjsonParser(),
         grader=CoverageGrader(),
         packager=Packager(),
-        llm=LlmEvaluator(model=args.model, max_workers=args.max_workers),
+        llm=LlmEvaluator(
+            model=args.model,
+            max_workers=args.max_workers,
+            coverage_summary=coverage_summary,
+        ),
         history=HistoryStore(),
         renderer=DashboardRenderer(),
     )
@@ -86,6 +101,7 @@ def main() -> int:
         output_path=args.output,
         history_dir=args.history_dir,
         features_glob=args.features_dir,
+        coverage_context=coverage_context,
     )
     return 0
 

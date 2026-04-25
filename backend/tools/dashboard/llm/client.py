@@ -55,7 +55,7 @@ _SDK_EXCEPTIONS = _resolve_sdk_exceptions()
 _RUBRIC_CACHE_MIN_TOKENS = 4096
 
 _RECOGNIZED_CRITERIA: frozenset[str] = frozenset(
-    [f"D{i}" for i in range(1, 7)] + [f"H{i}" for i in range(1, 8)]
+    [f"D{i}" for i in range(1, 8)] + [f"H{i}" for i in range(1, 8)]
 )
 _MAX_OUTPUT_TOKENS = 2048
 
@@ -67,16 +67,15 @@ _MAX_WARMUP = 2
 
 # Module-level constants for cache-prefix stability. MUST be the same
 # object on every messages.create call — don't rebuild per-call.
+#
+# Note: the system prompt was historically a module-level _SYSTEM constant
+# but is now an instance attribute (self._system) so the optional
+# coverage_summary can be appended to RUBRIC_TEXT inside the cached
+# prefix. The list+dict are still constructed ONCE per LlmEvaluator
+# instance (in __init__), so cache-prefix stability is preserved.
 _CACHED_TOOL: dict[str, Any] = {**REPORT_FINDINGS_TOOL, "cache_control": {"type": "ephemeral"}}
 _TOOLS: list[dict[str, Any]] = [_CACHED_TOOL]
 _TOOL_CHOICE: dict[str, Any] = {"type": "tool", "name": "ReportFindings"}
-_SYSTEM: list[dict[str, Any]] = [
-    {
-        "type": "text",
-        "text": RUBRIC_TEXT,
-        "cache_control": {"type": "ephemeral"},
-    }
-]
 
 
 class RubricTooShortError(RuntimeError):
@@ -109,6 +108,7 @@ class LlmEvaluator:
         model: str = "claude-sonnet-4-6",
         max_workers: int = 6,
         max_retries_per_call: int = 1,
+        coverage_summary: str = "",
     ) -> None:
         token_count = rubric_token_count()
         if token_count < _RUBRIC_CACHE_MIN_TOKENS:
@@ -125,6 +125,22 @@ class LlmEvaluator:
         self._model = model
         self._max_workers = max_workers
         self._max_retries = max_retries_per_call
+
+        # Build the cached system prompt ONCE per instance. The list+dict
+        # identity is preserved across all _call invocations so the cache
+        # prefix stays stable. coverage_summary (when non-empty) is
+        # appended INSIDE the cached block — same prompt-caching token
+        # boundary as RUBRIC_TEXT.
+        system_text = RUBRIC_TEXT
+        if coverage_summary:
+            system_text += "\n\n---\n\n" + coverage_summary
+        self._system: list[dict[str, Any]] = [
+            {
+                "type": "text",
+                "text": system_text,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
 
     def evaluate(
         self, packages: tuple[Package, ...]
@@ -186,7 +202,7 @@ class LlmEvaluator:
                 response = self._client.messages.create(
                     model=self._model,
                     max_tokens=_MAX_OUTPUT_TOKENS,
-                    system=_SYSTEM,
+                    system=self._system,
                     tools=_TOOLS,
                     tool_choice=_TOOL_CHOICE,
                     messages=[

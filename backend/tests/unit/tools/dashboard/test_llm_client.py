@@ -236,3 +236,68 @@ class TestParallelOrdering:
         packages = tuple(_pkg(f"p:{i}") for i in range(5))
         results, _ = evaluator.evaluate(packages)
         assert tuple(r.package_id for r in results) == tuple(p.id for p in packages)
+
+
+class TestCoverageSummaryInjection:
+    # The rubric itself mentions "## Coverage context for this run" inside
+    # the D7 description, so tests use a distinctive marker phrase that is
+    # NOT present in RUBRIC_TEXT to detect injection unambiguously.
+    _UNIQUE_SUMMARY_MARKER = "ZX_COV_SUMMARY_MARKER_98765"
+
+    def test_coverage_summary_appended_to_system_prompt(
+        self, mock_anthropic_client, good_tool_input
+    ):
+        from tools.dashboard.llm.rubric import RUBRIC_TEXT
+
+        # Sanity: marker must NOT exist in the bare rubric.
+        assert self._UNIQUE_SUMMARY_MARKER not in RUBRIC_TEXT
+
+        mock_anthropic_client.scripted_responses.append(good_tool_input)
+        summary = f"## Coverage context for this run\n{self._UNIQUE_SUMMARY_MARKER}"
+        evaluator = LlmEvaluator(
+            client=mock_anthropic_client,
+            max_workers=1,
+            coverage_summary=summary,
+        )
+        evaluator.evaluate((_pkg(),))
+        call = mock_anthropic_client.calls[0]
+        system_text = call["system"][0]["text"]
+        assert self._UNIQUE_SUMMARY_MARKER in system_text
+        # Rubric prefix is still present (cache prefix stability).
+        assert "BDD Quality Rubric" in system_text
+
+    def test_no_coverage_summary_system_is_rubric_only(
+        self, mock_anthropic_client, good_tool_input
+    ):
+        from tools.dashboard.llm.rubric import RUBRIC_TEXT
+
+        mock_anthropic_client.scripted_responses.append(good_tool_input)
+        evaluator = LlmEvaluator(
+            client=mock_anthropic_client,
+            max_workers=1,
+        )  # no coverage_summary kwarg
+        evaluator.evaluate((_pkg(),))
+        call = mock_anthropic_client.calls[0]
+        system_text = call["system"][0]["text"]
+        # When no coverage summary is supplied, the system prompt is the
+        # rubric ONLY — no separator, no additional content appended.
+        assert system_text == RUBRIC_TEXT
+        assert self._UNIQUE_SUMMARY_MARKER not in system_text
+
+    def test_system_prompt_built_once_at_init_uses_instance_attr(
+        self, mock_anthropic_client, good_tool_input
+    ):
+        # The system prompt is built ONCE at __init__ and stored on the
+        # instance — same list/dict identity across calls so the cache
+        # prefix stays stable.
+        mock_anthropic_client.scripted_responses.append(good_tool_input)
+        mock_anthropic_client.scripted_responses.append(good_tool_input)
+        evaluator = LlmEvaluator(
+            client=mock_anthropic_client,
+            max_workers=1,
+            coverage_summary=f"## Coverage context for this run\n{self._UNIQUE_SUMMARY_MARKER}",
+        )
+        evaluator.evaluate((_pkg("p:1"), _pkg("p:2")))
+        # Both calls reference the same system list object on the instance.
+        assert mock_anthropic_client.calls[0]["system"] is evaluator._system
+        assert mock_anthropic_client.calls[1]["system"] is evaluator._system
