@@ -1,0 +1,18 @@
+<div style="margin:8px 0;">
+  <div>
+    <code>{{ fc.qualname }}</code> ·
+    {{ fc.covered_branches }}/{{ fc.total_branches }}
+    ({{ '%.0f'|format(fc.pct) }}%)
+    {% if not fc.reached %}<span style="color:var(--warning)">⚠ not reached</span>{% endif %}
+  </div>
+  {% if fc.uncovered_branches %}
+  <ul>
+    {% for b in fc.uncovered_branches %}
+    <li>
+      <code>{{ b.file }}:{{ b.line }}</code> —
+      <code>{{ b.condition_text }}</code>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</div>

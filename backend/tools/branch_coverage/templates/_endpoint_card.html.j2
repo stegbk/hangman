@@ -1,0 +1,16 @@
+<article class="card {{ ep.tone.value }}">
+  <div class="muted">{{ ep.endpoint.method }} {{ ep.endpoint.path }}</div>
+  <div class="pct">{{ '%.1f'|format(ep.pct) }}%</div>
+  <div class="muted">
+    {{ ep.covered_branches }} of {{ ep.total_branches }} branches ·
+    handler: <code>{{ ep.endpoint.handler_qualname }}</code>
+  </div>
+  <div class="drilldown">
+    <details>
+      <summary>{{ ep.reachable_functions|length }} reachable function(s)</summary>
+      {% for fc in ep.reachable_functions %}
+        {% include "_function_drilldown.html.j2" %}
+      {% endfor %}
+    </details>
+  </div>
+</article>
