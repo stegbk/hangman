@@ -40,11 +40,11 @@ Ready for **Feature 3: bdd-branch-coverage** (call graph + per-branch coverage c
 > The PreToolUse hook blocks commit/push/PR if quality gates are incomplete.
 > Delete this section when no workflow is active (or set Command to `none`).
 
-| Field     | Value                                                                       |
-| --------- | --------------------------------------------------------------------------- |
-| Command   | /new-feature bdd-branch-coverage                                            |
-| Phase     | 4 — Execute (TDD via subagent-driven-development)                           |
-| Next step | Phase 4.0 dispatch plan check → Phase 4.1 dispatch first wave (A1→A2→A3→B1) |
+| Field     | Value                                                                                                                                                                             |
+| --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Command   | /new-feature bdd-branch-coverage                                                                                                                                                  |
+| Phase     | 4 — Execute (TDD via subagent-driven-development)                                                                                                                                 |
+| Next step | E1 (grader correctness core, 17 tests) — paused at 7/17 awaiting user direction (A1+A2+A3+B1+C1+D1+D3 landed, 20 tests green; D1 patched for coverage.py 7.13.5 buffer-flush bug) |
 
 ### Checklist
 

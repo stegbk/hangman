@@ -2,9 +2,24 @@
 
 All notable changes to Hangman will be documented in this file.
 
-## [unreleased] — 2026-04-24
+## [unreleased] — 2026-04-24 (Feature 3 in progress)
 
-### Added
+### In progress: Feature 3 — BDD branch coverage
+
+- **Plan-review loop PASSED at iter 16** (`5e078e1`). 16 iterations, ~30 P1s + ~25 P2s patched. Major pivots: source-line vs arc-id matching (iter 6); audit math line-granularity consistency (iters 4, 7, 9); D1 middleware active route-matching via `request.app.router.routes` (iter 6); branch-line filtering at loader (iter 8); H1 path-format invariant + per-endpoint attribution checks (iters 5, 8); 5 codebase-grounding fixes (iters 10–11, 15) replacing fictitious symbols (`hangman.routes.create_game` → real `start_game`; `hangman.game.new_game` → doesn't exist; `self._by_category` → real `self.categories`; no `/forfeit` route; `features_glob: str` → real `features_glob: Path`); design spec §14 supersedes appendix.
+- **Phase 4 execution: 7 of 17 tasks committed.**
+  - A1 `508d1b5` — coverage 7.13.5 + pyan3 2.5.0 dev deps + MIT LICENSE + .gitignore.
+  - A2 `bfa6403` — `backend/tools/branch_coverage/` skeleton + Makefile targets (`backend-coverage`, `bdd-coverage`) + PID-tracked `scripts/backend-coverage.sh` + `.coveragerc` with `relative_files = true`.
+  - A3 `a5da4c5` — pre-implementation API spike caught **2 P1 API bugs** before downstream tasks: pyan3 `CallGraphVisitor.uses_graph` doesn't exist (real attribute is `uses_edges`); `Coverage.analysis2()` returns a 5-tuple, not an `Analysis` object on coverage 7.13.5 (real path is `cov._analyze(file).branch_stats().keys()` + `set_query_contexts([label])` + `data.arcs(file)` for per-context — the `data.arcs(file, contexts=[label])` kwarg form doesn't exist on 7.13.5).
+  - B1 `64a8ce0` — `models.py` (Tone enum + 9 frozen dataclasses).
+  - C1 `73ee728` — `RouteEnumerator` (reflective FastAPI route enumeration) + `minimal_app/` fixture + `conftest.py`. **Caught 1 P2** in plan: empty-FastAPI test fixture broke on built-in introspection routes (`/docs`, `/redoc`, `/openapi.json`); fixed inline by constructing the bare app with `openapi_url=None, docs_url=None, redoc_url=None`.
+  - D1 `2dfd481` + `0761dd4` — `CoverageContextMiddleware`. **Caught 1 P0 coverage.py 7.13.5 buffer-flush bug**: calling `cov.switch_context("")` between distinct labels silently breaks subsequent context attribution — original middleware would have silently lost per-endpoint attribution for every BDD request after the first. Fix: removed the `switch_context("")` finally block. Trade-off documented: between-request work attributes to previous request's context. H1 will catch any practical breakage via positive (`/guesses` credits `apply_guess`) + negative (`/categories` doesn't reach `apply_guess`) checks.
+  - D3 `21307ac` — `CoverageDataLoader`. Loader uses A3-validated APIs: `set_query_contexts([label])` + `data.arcs(file)` (try/finally) for per-context; `cov._analyze(file).branch_stats().keys()` for authoritative branch-source-lines. Also filters per-context arcs by branch-source-line membership to exclude linear-flow arcs (per plan-review iter 8 P1).
+- **Remaining 10 tasks**: C2 (callgraph) → C3 (reachability) → D2 (serve.py) → E1 (grader, correctness core, 17 tests) → E2 (json emitter) → E3 (renderer + templates) → F1 (orchestrator + CLI) → G1 (dashboard augment) → G2 (LLM integration) → H1 (live smoke).
+
+## Earlier: Features 1–2 (shipped)
+
+### Added (Feature 2: 2026-04-24)
 
 - **Feature 2: BDD Dashboard** — `make bdd-dashboard` generates
   `tests/bdd/reports/dashboard.html` using the Anthropic API to
