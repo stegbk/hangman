@@ -408,9 +408,12 @@ from pyan.analyzer import CallGraphVisitor
 def build(self, source_root: Path) -> CallGraph:
     files = list(source_root.rglob("*.py"))
     visitor = CallGraphVisitor([str(f) for f in files])
-    # visitor.uses_graph: dict[Node, set[Node]] — "X uses Y" = X calls Y
+    # visitor.uses_edges: dict[Node, set[Node]] — "X uses Y" = X calls Y.
+    # NOTE: pyan3 2.5.0 has both `uses_graph` (=None on instances) and
+    # `uses_edges` (the populated dict). A3 spike (2026-04-24) verified
+    # uses_edges is the authoritative attribute; uses_graph is unused.
     adjacency: dict[str, frozenset[str]] = {}
-    for caller, callees in visitor.uses_graph.items():
+    for caller, callees in visitor.uses_edges.items():
         adjacency[caller.get_name()] = frozenset(c.get_name() for c in callees)
     return CallGraph(adjacency=adjacency)
 ```
@@ -475,7 +478,7 @@ class LoadedCoverage:
 
 - Uses `coverage.Coverage(data_file=coverage_file)` + `.load()` + `.get_data()` → `CoverageData`.
 - `CoverageData.measured_contexts()` returns context labels (our middleware tags + `""` for untagged hits).
-- `CoverageData.arcs(file, contexts=[label])` — coverage.py 7.x supports the `contexts` filter argument on `arcs()` / `lines()` — returns hits for THIS context only. Caller iterates `measured_contexts()` and accumulates per context.
+- Per-context hit sets: `data.set_query_contexts([label])` + `data.arcs(file)` (with `try/finally: data.set_query_contexts(None)` reset). A3 spike (2026-04-24, coverage.py 7.13.5) verified `CoverageData.arcs()` signature is `arcs(self, filename: str)` — there is **no** `contexts` kwarg on the data accessor. `set_query_contexts` is the canonical public API for context-scoped queries. Caller iterates `measured_contexts()` and accumulates per context with the set/get/reset pattern.
 - Authoritative total per file is context-independent: `CoverageData.measured_files()` + per-file arc set from the file's `.coverage.config.arcs()` or via `coverage.Analyzer`. Same as aggregate design.
 - Handles negative target lines (`[12, -12]` = function-exit arc) without crashing; filtered from the ReachableBranch enumeration since they aren't user-visible branches.
 - If the `.coverage` file is missing/corrupt, raise `CoverageDataLoadError` with a specific hint ("Run `make bdd-coverage` first; is `.backend-coverage.pid` stale?").
@@ -1175,11 +1178,11 @@ H1 Step 7b's path-format invariant fail-fast rejects any file with a `backend/` 
 After iter 6, the matching key is `(file, source_line)` — not `(file, branch_id)`. Reasons:
 
 1. **Reachability emits synthetic `f"{line}->{line+1}"` arc IDs from AST** while coverage.py emits real arc IDs from bytecode. Else-arms point to non-consecutive lines; multi-line bodies have non-`line+1` targets; exception arcs target handler lines. Direct equality on the synthetic IDs fails for most real conditionals.
-2. **`Analysis.arc_possibilities()` includes non-branch arcs** (linear flow between consecutive statements). Counting them as "branches" inflates `total_branches_per_file`. The correct API is `Analysis.branch_lines()` which returns only source-lines that ARE branch points.
+2. **`Analysis.arc_possibilities()` includes non-branch arcs** (linear flow between consecutive statements). Counting them as "branches" inflates `total_branches_per_file`. The correct API is `set(Analysis.branch_stats().keys())` which returns only source-lines that ARE branch points. (A3 spike (2026-04-24) verified coverage.py 7.13.5: `Analysis.branch_lines()` does NOT exist as a public method — `branch_stats()` returning `dict[line, (total, taken)]` is the documented surface; the keys are precisely the branch source-lines. `Analysis` itself is reachable via `Coverage._analyze(file)` since the public `cov.analysis2(file)` returns a 5-tuple, not an Analysis object.)
 
 The plan now:
 
-- Uses `Analysis.branch_lines()` for `total_branches_per_file` (count of source-lines that are branch points per file).
+- Uses `set(Analysis.branch_stats().keys())` for `total_branches_per_file` (count of source-lines that are branch points per file).
 - Defines a `_arc_source_line(branch_id) -> int` helper in the Grader that extracts the source-line from any arc ID.
 - Projects `hits.hits_by_context[ctx]` and `hits.all_hits` to `(file, source_line)` tuples for matching against `(b.file, b.line)`.
 - Operates audit math on `enumerated_reachable_lines: set[tuple[str, int]]` not `set[tuple[str, str]]`.
@@ -1191,7 +1194,7 @@ The plan now:
 
 **Iter 4 (commit `f0190f2`).**
 
-§4.5 line 478 says `CoverageData.arcs(file, contexts=[label])`. The plan uses exactly this kwarg form via `_arcs_for_context(data, file, ctx)`. Earlier plan drafts used `data.set_query_contexts([label]) + data.arcs(file)` — the global-state mutation form — and were patched out in iter 4 / iter 5.
+§4.5 originally said `CoverageData.arcs(file, contexts=[label])` after iter 4/5 patched the design from `set_query_contexts` to the kwarg form (on context7 doc-snippet evidence). **The A3 spike (2026-04-24, coverage.py 7.13.5) falsified the kwarg assumption** — `CoverageData.arcs` real signature is `arcs(self, filename: str)`, no `contexts` kwarg. §4.5 now specifies `data.set_query_contexts([label])` + `data.arcs(file)` with `try/finally: data.set_query_contexts(None)` reset, and the plan's `_arcs_for_context` uses that pattern. The "global-state mutation" concern that drove iter 4/5 is real but mitigated by the strict try/finally reset and confined to a single helper.
 
 ### 14.4 — Middleware route-template resolution
 

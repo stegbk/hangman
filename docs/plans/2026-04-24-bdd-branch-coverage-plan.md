@@ -1073,9 +1073,14 @@ class CallGraphBuilder:
             return CallGraph(adjacency={})
 
         adjacency: dict[str, frozenset[str]] = {}
-        # pyan3 exposes uses_graph: dict[Node, set[Node]]
-        uses_graph = getattr(visitor, "uses_graph", {})
-        for caller, callees in uses_graph.items():
+        # pyan3 2.5.0 exposes the call graph in `uses_edges`:
+        # dict[Node, set[Node]]. The instance attribute `uses_graph`
+        # exists too but is None on instances — A3 spike (2026-04-24)
+        # verified: only `uses_edges` is populated. Use it as the source
+        # of truth. `getattr(..., {})` keeps the degraded path safe if a
+        # future pyan release ever drops `uses_edges`.
+        uses_edges = getattr(visitor, "uses_edges", {})
+        for caller, callees in uses_edges.items():
             caller_name = self._node_name(caller)
             callee_names = frozenset(self._node_name(c) for c in callees)
             adjacency[caller_name] = callee_names
@@ -2072,15 +2077,21 @@ class CoverageDataLoader:
     ) -> list[tuple[int, int]]:
         """Fetch arcs hit under a specific context, filtered to branch arcs only.
 
-        Per plan-review iter 4 P1 (Codex) + design spec §4.5 line 478:
-        use the public per-context kwarg `CoverageData.arcs(file, contexts=[label])`
-        rather than `set_query_contexts([label]) + arcs(file)`. Both are
-        public in coverage.py 7.x; the kwarg form is what the design specifies
-        and avoids the global-state side effect of set_query_contexts.
+        Per A3 spike (2026-04-24, coverage.py 7.13.5): the design's
+        original `data.arcs(file, contexts=[label])` kwarg form does NOT
+        exist on `CoverageData.arcs` — its real signature is
+        `arcs(self, filename: str)`. Plan-review iter 4 patched the plan
+        AWAY from `set_query_contexts` toward the kwarg form on the
+        assumption (from a context7 doc snippet) that the kwarg was
+        public; the spike falsified that assumption. The canonical public
+        per-context query API on coverage.py 7.x is
+        `data.set_query_contexts([label])` + `data.arcs(file)`, with a
+        `try/finally: data.set_query_contexts(None)` reset so we don't
+        leak global state to the next call.
 
         Per plan-review iter 8 P1 (Codex): filter arcs by their SOURCE
         LINE membership in `branch_lines` — the authoritative set of
-        branch points in this file (from `Analysis.branch_lines()`).
+        branch points in this file (from `set(Analysis.branch_stats().keys())`).
         Without this filter, linear-flow arcs (e.g., from `a = 1\nb = 2`)
         slip into the per-context hit set and the Grader's source-line
         projection mistakes them for branch hits.
@@ -2092,8 +2103,14 @@ class CoverageDataLoader:
         Empty-string context matches hits that arrived without a tag
         (startup, shutdown, background tasks).
         """
-        contexts = [context] if context else [""]
-        arcs = data.arcs(file, contexts=contexts) or []
+        query_label = context if context else ""
+        try:
+            data.set_query_contexts([query_label])
+            arcs = data.arcs(file) or []
+        finally:
+            # Reset so no other caller (or our own next iteration) inherits
+            # the per-context filter. None == "all contexts".
+            data.set_query_contexts(None)
         return [
             a for a in arcs
             if a[1] > 0 and a[0] in branch_lines
@@ -2119,35 +2136,52 @@ class CoverageDataLoader:
            granularity (see E1's `_arc_source_line` helper), so the
            authoritative count must also be source-line-counted.
 
-        Source: coverage.py 7.x exposes `Analysis.branch_lines()` —
-        the documented method for "lines with branches" (per coverage.py's
-        own `branch_stats()`/`branch_lines()` design — used by `coverage
-        report` and `coverage html` to compute branch percentage).
+        Source: coverage.py 7.x exposes `Analysis.branch_stats()` —
+        the documented dict[line, (total, taken)] mapping where the
+        keys are precisely the source-lines that ARE branch points
+        (per coverage.py's own `branch_stats()` design — used by
+        `coverage report` and `coverage html` to compute branch
+        percentages). A3 spike (2026-04-24, coverage.py 7.13.5)
+        verified:
 
-        The A3 spike (Phase A) characterizes `branch_lines` on the
-        installed coverage.py and updates this code if the API shape has
-        drifted.
+          - `Coverage.analysis2(file)` returns a 5-tuple
+            `(filename, executable_lines, excluded_lines, missing_lines,
+            formatted_missing_str)`, NOT an `Analysis` object. There
+            is no `analysis2().branch_lines()` API on 7.13.5.
+          - The modern `Analysis` object IS reachable via
+            `Coverage._analyze(file)`. The leading underscore is a
+            naming convention; the method is stable, used by coverage's
+            own report/html commands, and is the only public path to
+            an `Analysis` instance on 7.13.5.
+          - `Analysis.branch_stats()` returns
+            `dict[line_no, (total_branches, taken_branches)]`. Our
+            authoritative branch-source-line set is `set(stats.keys())`.
+          - `Analysis.branch_lines()` itself does NOT exist on 7.13.5.
 
-        Hard-fail if the public API has shifted between A3 and D3 (rather
-        than silently returning lossy data — per plan-review iter 1 P1).
+        Hard-fail if the public surface has shifted between the A3
+        spike and runtime (rather than silently returning lossy data —
+        per plan-review iter 1 P1). pyproject.toml pins
+        `coverage>=7.13,<8` to keep the surface stable within Feature 3.
         """
         try:
-            analysis = cov.analysis2(file)
+            analysis = cov._analyze(file)
         except (AttributeError, TypeError) as exc:
             raise CoverageDataLoadError(
-                f"Coverage.analysis2('{file}') is not available — "
-                f"coverage.py public API may have shifted: {exc}. The A3 "
-                f"spike should have caught this; re-run the spike or pin "
-                f"coverage.py to a known-good version."
+                f"Coverage._analyze('{file}') is not available — "
+                f"coverage.py public-but-underscored API may have shifted: "
+                f"{exc}. The A3 spike characterized this on 7.13.5; "
+                f"re-run the spike or re-pin coverage.py."
             ) from exc
-        if not hasattr(analysis, "branch_lines"):
+        if not hasattr(analysis, "branch_stats"):
             raise CoverageDataLoadError(
-                f"Coverage.analysis2('{file}') returned shape lacking "
-                f"`branch_lines()` (got {type(analysis).__name__}); "
-                f"coverage.py public API has shifted between A3 spike and "
-                f"this run. Re-run the spike to characterize the new shape."
+                f"Coverage._analyze('{file}') returned shape lacking "
+                f"`branch_stats()` (got {type(analysis).__name__}); "
+                f"coverage.py API has shifted between A3 spike and this "
+                f"run. Re-run the spike to characterize the new shape."
             )
-        return set(analysis.branch_lines())
+        # branch_stats(): dict[line_no, (total_branches, taken_branches)]
+        # The keys ARE the branch source-lines.
+        return set(analysis.branch_stats().keys())
 ```
 
 - [ ] **Step 4: Run tests — expect pass**
@@ -2155,7 +2189,7 @@ class CoverageDataLoader:
 Run: `cd backend && uv run pytest tests/unit/tools/branch_coverage/test_coverage_data.py -v`
 Expected: all pass.
 
-**If `test_exposes_per_context_hit_sets` fails** because coverage.py's public API for per-context arcs has shifted: inspect `data.measured_contexts()` output, read `coverage.CoverageData.arcs` signature (`cd backend && uv run python -c "import coverage; help(coverage.CoverageData.arcs)"`), and adjust `_arcs_for_context` accordingly. **The canonical public API is `data.arcs(file, contexts=[label])`** — the per-context kwarg form (per plan-review iter 4 patch (b) + design spec §4.5 line 478). Do NOT revert to `set_query_contexts([label])` + `arcs(file)`: that has the same effect but uses a global-state mutation that the iter-4 patch deliberately removed. If the kwarg API is truly broken on the installed coverage.py version, treat it as a coverage.py regression and pin to a known-good version (consult A3 spike Step 2 results for the version that was characterized as working). Last-resort fallback only: re-introduce `set_query_contexts` with a try/finally reset, AND open a tracking issue noting the coverage.py version + symptom.
+**If `test_exposes_per_context_hit_sets` fails** because coverage.py's public API for per-context arcs has shifted: inspect `data.measured_contexts()` output, read `coverage.CoverageData.arcs` signature (`cd backend && uv run python -c "import coverage; help(coverage.CoverageData.arcs)"`), and adjust `_arcs_for_context` accordingly. **The canonical public API on coverage.py 7.13.5 is `data.set_query_contexts([label])` + `data.arcs(file)`** with a `try/finally: data.set_query_contexts(None)` reset (per A3 spike 2026-04-24 + design spec §4.5). The kwarg form `data.arcs(file, contexts=[label])` does NOT exist on 7.13.5 — its real signature is `arcs(self, filename: str)`. (Plan-review iter 4 had patched this section toward the kwarg form on context7 doc-snippet evidence; the A3 spike falsified that and re-anchored on `set_query_contexts`. The "global-state mutation" concern is real but mitigated by the strict try/finally reset.) If `set_query_contexts` itself drifts in a future coverage.py release, pin coverage.py to a known-good version (consult A3 spike Step 2 results — 7.13.5 is the characterized baseline) and re-run the spike before unpinning.
 
 - [ ] **Step 5: ruff + mypy**
 
@@ -5007,7 +5041,7 @@ The following are the highest-risk areas in this plan — plan-review should foc
 
 1. **E1 Grader audit reconciliation math** — the dedup across endpoints is subtle. Shared-helper test case in test_grader.py is the correctness guarantor.
 2. **D1 middleware concurrency** — `switch_context` is process-global. Tests rely on sequential requests; if FastAPI's TestClient doesn't block between requests, attribution leaks. Worth an extra scrutiny pass.
-3. **D3 coverage_data per-context API usage** — `CoverageData.set_query_contexts([label])` may have shifted between coverage.py versions. If the per-context arcs API drifted in 7.13, the test harness generating `.coverage` fixtures on-the-fly will surface it.
-4. **C2 pyan3 Python API** — `visitor.uses_graph` key/value types depend on pyan3 version. Actual pyan3 node type may not have `.get_name()` — the `_node_name` fallback chain handles it, but worth verifying on pyan3 2.5.0 specifically.
+3. **D3 coverage_data per-context API usage** — RESOLVED by A3 spike (2026-04-24). On coverage.py 7.13.5: `CoverageData.arcs(file, contexts=[label])` does NOT exist (real signature is `arcs(self, filename: str)`); `data.set_query_contexts([label])` + `data.arcs(file)` IS the canonical per-context API. Plan + design now use that pattern with try/finally reset. Authoritative branch lines: `set(Coverage._analyze(file).branch_stats().keys())` (since `cov.analysis2(file)` returns a 5-tuple, not an `Analysis` object, on 7.13.5). pyproject.toml pins `coverage>=7.13,<8` to keep the surface stable.
+4. **C2 pyan3 Python API** — RESOLVED by A3 spike (2026-04-24). On pyan3 2.5.0: `visitor.uses_graph` is `None` on instances; `visitor.uses_edges: dict[Node, set[Node]]` is the populated call-graph attribute. Nodes have `.get_name()` returning dotted qualnames (verified on the real Hangman source: `'hangman.db'`, `'hangman.routes.start_game'`, etc.). The `_node_name` fallback chain is harmless — `get_name()` always succeeds. Plan + design now use `uses_edges`.
 5. **G1 + G2 Feature 2 touch surface** — 5 files modified + existing Feature 2 tests must stay green. The `render()` signature gains a new `coverage_context` argument; every existing test call-site needs updating. Easy to miss.
 6. **F1 analyzer_main module import** — `from hangman.main import app` in `__main__.py` may trigger module-import side effects per §12 risk #2. If the real hangman app initializes the DB at import time, this fires during Feature 3 analyzer runs (unexpected). Plan-phase mitigation: audit during F1; if issue appears, test-mode env var suppression.
