@@ -92,5 +92,12 @@ bdd-coverage:  ## Run BDD suite with coverage instrumentation + generate coverag
 	  fi
 	@rm -f .backend-coverage.pid
 	@sleep 2
-	cd backend && uv run coverage combine || echo "WARN: coverage combine found no fragments"
+	@cd backend && uv run coverage combine 2> /tmp/coverage-combine.err; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then \
+	    if grep -q "No data" /tmp/coverage-combine.err; then \
+	      echo "WARN: coverage combine found no fragments"; \
+	    else \
+	      cat /tmp/coverage-combine.err >&2; exit $$rc; \
+	    fi; \
+	  fi
 	cd backend && uv run python -m tools.branch_coverage

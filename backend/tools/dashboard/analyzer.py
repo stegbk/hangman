@@ -57,7 +57,8 @@ def load_coverage_context_if_fresh(ndjson_path: Path) -> CoverageContext | None:
     cov_ts_str = data.get("timestamp", "")
     try:
         cov_ts = datetime.fromisoformat(cov_ts_str.replace("Z", "+00:00"))
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, AttributeError) as exc:
+        _LOG.warning("coverage.json timestamp %r unparseable: %s", cov_ts_str, exc)
         return None
     ndjson_mtime = datetime.fromtimestamp(ndjson_path.stat().st_mtime, tz=UTC)
     if abs((cov_ts - ndjson_mtime).total_seconds()) > timedelta(hours=1).total_seconds():
@@ -66,28 +67,40 @@ def load_coverage_context_if_fresh(ndjson_path: Path) -> CoverageContext | None:
     return _build_coverage_context(data)
 
 
-def _build_coverage_context(data: dict[str, Any]) -> CoverageContext:
-    """Module-level helper. Underscore-prefixed (internal to analyzer.py)."""
-    endpoints_summary = tuple(
-        (ep["method"], ep["path"], ep["pct"], ep["tone"]) for ep in data.get("endpoints", [])
-    )
-    endpoints_uncovered_flat: dict[str, tuple[dict[str, Any], ...]] = {
-        f"{ep['method']} {ep['path']}": tuple(ep.get("uncovered_branches_flat", []))
-        for ep in data.get("endpoints", [])
-    }
-    totals = data.get("totals", {})
-    audit = data.get("audit", {})
-    return CoverageContext(
-        timestamp=data.get("timestamp", ""),
-        totals_pct=totals.get("pct", 0.0),
-        totals_tone=totals.get("tone", ""),
-        totals_covered_branches=totals.get("covered_branches", 0),
-        totals_total_branches=totals.get("total_branches", 0),
-        endpoints_summary=endpoints_summary,
-        endpoints_uncovered_flat=endpoints_uncovered_flat,
-        audit_reconciled=audit.get("reconciled", True),
-        audit_unattributed_count=len(audit.get("unattributed_branches", [])),
-    )
+def _build_coverage_context(data: dict[str, Any]) -> CoverageContext | None:
+    """Module-level helper. Underscore-prefixed (internal to analyzer.py).
+
+    Returns None if ``data`` does not match the expected coverage.json
+    schema (KeyError/TypeError on missing or wrong-typed fields). The
+    caller treats None as "no coverage augmentation this run" and the
+    dashboard renders without the coverage card. This keeps the
+    dashboard robust against partial, hand-edited, or
+    older-schema coverage.json artifacts.
+    """
+    try:
+        endpoints_summary = tuple(
+            (ep["method"], ep["path"], ep["pct"], ep["tone"]) for ep in data.get("endpoints", [])
+        )
+        endpoints_uncovered_flat: dict[str, tuple[dict[str, Any], ...]] = {
+            f"{ep['method']} {ep['path']}": tuple(ep.get("uncovered_branches_flat", []))
+            for ep in data.get("endpoints", [])
+        }
+        totals = data.get("totals", {})
+        audit = data.get("audit", {})
+        return CoverageContext(
+            timestamp=data.get("timestamp", ""),
+            totals_pct=totals.get("pct", 0.0),
+            totals_tone=totals.get("tone", ""),
+            totals_covered_branches=totals.get("covered_branches", 0),
+            totals_total_branches=totals.get("total_branches", 0),
+            endpoints_summary=endpoints_summary,
+            endpoints_uncovered_flat=endpoints_uncovered_flat,
+            audit_reconciled=audit.get("reconciled", True),
+            audit_unattributed_count=len(audit.get("unattributed_branches", [])),
+        )
+    except (KeyError, TypeError, AttributeError) as exc:
+        _LOG.warning("coverage.json schema mismatch — augmentation disabled: %s", exc)
+        return None
 
 
 def build_coverage_summary(ctx: CoverageContext) -> str:

@@ -54,6 +54,30 @@ class TestFiltersNonApiRoutes:
         endpoints = RouteEnumerator().enumerate(bare_app)
         assert endpoints == ()
 
+    def test_default_fastapi_docs_routes_are_filtered(self) -> None:
+        """Per Phase 5 code-review iter 1 P2: a default FastAPI() app
+        registers /docs, /redoc, and /openapi.json. These are framework
+        infrastructure (not user endpoints) and inflate the audit
+        denominator. RouteEnumerator must filter them out."""
+        from fastapi import FastAPI
+
+        # Default FastAPI app — docs/redoc/openapi.json all enabled.
+        app = FastAPI()
+
+        @app.get("/api/v1/things")
+        def list_things() -> dict:
+            return {"things": []}
+
+        endpoints = RouteEnumerator().enumerate(app)
+        paths = {e.path for e in endpoints}
+        # The user route is present.
+        assert "/api/v1/things" in paths
+        # The framework routes are filtered.
+        assert "/docs" not in paths
+        assert "/redoc" not in paths
+        assert "/openapi.json" not in paths
+        assert "/docs/oauth2-redirect" not in paths
+
 
 class TestNestedRouterPrefix:
     """Per plan-review iter 1 P2: real hangman code uses

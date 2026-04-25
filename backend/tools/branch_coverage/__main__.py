@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import traceback
 from pathlib import Path
 
 from tools.branch_coverage.analyzer import Analyzer
@@ -75,7 +76,11 @@ def main() -> int:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
     except Exception as exc:  # noqa: BLE001
+        # Surface the full traceback to stderr so post-mortem debugging
+        # of the dev-only branch_coverage CLI doesn't require re-running
+        # the (slow) instrumented BDD suite to reproduce the failure.
         print(f"ERROR (unexpected): {exc}", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
         return 1
     return 0
 

@@ -60,24 +60,36 @@ class CallGraphBuilder:
         # of truth. `getattr(..., {})` keeps the degraded path safe if a
         # future pyan release ever drops `uses_edges`.
         uses_edges = getattr(visitor, "uses_edges", {})
+        fallback_count = 0
         for caller, callees in uses_edges.items():
-            caller_name = self._node_name(caller)
-            callee_names = frozenset(self._node_name(c) for c in callees)
+            caller_name, caller_fb = self._node_name(caller)
+            fallback_count += int(caller_fb)
+            callee_pairs = [self._node_name(c) for c in callees]
+            fallback_count += sum(1 for _, fb in callee_pairs if fb)
+            callee_names = frozenset(name for name, _ in callee_pairs)
             adjacency[caller_name] = callee_names
+        if fallback_count:
+            _LOG.warning(
+                "callgraph: %d node(s) fell back to str() during name "
+                "resolution; pyan3 attribute layout may have changed",
+                fallback_count,
+            )
         return CallGraph(adjacency=adjacency)
 
     @staticmethod
-    def _node_name(node: object) -> str:
+    def _node_name(node: object) -> tuple[str, bool]:
         """Derive a qualified name from a pyan3 Node. Attribute names
         differ slightly between pyan3 versions; try common ones, fall
-        back to str()."""
+        back to str(). Returns ``(name, fell_back_to_str)`` so the
+        caller can emit a single summary log if any fallbacks fired."""
         for attr in ("get_name", "fullname", "name"):
             method_or_val = getattr(node, attr, None)
             if callable(method_or_val):
                 try:
-                    return str(method_or_val())
-                except Exception:  # noqa: BLE001
+                    return str(method_or_val()), False
+                except Exception as exc:  # noqa: BLE001
+                    _LOG.debug("pyan3 node attr %s() raised: %s", attr, exc)
                     continue
             if isinstance(method_or_val, str):
-                return method_or_val
-        return str(node)
+                return method_or_val, False
+        return str(node), True

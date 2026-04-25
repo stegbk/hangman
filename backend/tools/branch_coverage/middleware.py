@@ -77,7 +77,8 @@ class CoverageContextMiddleware(BaseHTTPMiddleware):
         for route in getattr(app.router, "routes", []):
             try:
                 result = route.matches(request.scope)
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
+                _LOG.debug("route %r raised during matches: %s", route, exc)
                 continue
             match = result[0] if isinstance(result, tuple) else result
             if match == Match.FULL:

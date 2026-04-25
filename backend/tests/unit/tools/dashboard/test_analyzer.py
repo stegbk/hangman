@@ -137,6 +137,48 @@ class TestCoverageAugmentation:
         cov = load_coverage_context_if_fresh(ndjson)
         assert cov is None  # too stale
 
+    def test_corrupt_coverage_json_returns_none_context(
+        self, tmp_path: Path, caplog: object
+    ) -> None:
+        """Per Phase 5 code-review iter 1 P1: a partial / hand-edited /
+        older-schema coverage.json must NOT crash the dashboard. The
+        builder should log a schema-mismatch warning and return None
+        so the dashboard renders without the coverage card."""
+        import json
+        import logging
+        from datetime import UTC, datetime
+
+        from tools.dashboard.analyzer import load_coverage_context_if_fresh
+
+        ndjson = tmp_path / "frontend" / "test-results" / "cucumber.ndjson"
+        ndjson.parent.mkdir(parents=True)
+        ndjson.write_text("")
+        cov_json = tmp_path / "tests" / "bdd" / "reports" / "coverage.json"
+        cov_json.parent.mkdir(parents=True)
+        # Fresh timestamp so we get past the staleness check; missing
+        # `endpoints` key entirely AND `totals` malformed (a list instead
+        # of a dict) — should trigger the KeyError/TypeError path.
+        cov_ts = datetime.fromtimestamp(ndjson.stat().st_mtime, tz=UTC).isoformat()
+        cov_json.write_text(
+            json.dumps(
+                {
+                    "timestamp": cov_ts,
+                    # No "endpoints" key, "totals" is a list not a dict.
+                    "totals": ["this", "is", "not", "a", "dict"],
+                    "audit": {"reconciled": True, "unattributed_branches": []},
+                }
+            )
+        )
+
+        with caplog.at_level(logging.WARNING):  # type: ignore[attr-defined]
+            cov = load_coverage_context_if_fresh(ndjson)
+
+        assert cov is None
+        assert any(
+            "schema mismatch" in rec.message
+            for rec in caplog.records  # type: ignore[attr-defined]
+        ), f"expected schema-mismatch warning; got {[r.message for r in caplog.records]}"  # type: ignore[attr-defined]
+
     def test_fresh_coverage_json_returns_context(self, tmp_path: Path) -> None:
         import json
         from datetime import UTC, datetime

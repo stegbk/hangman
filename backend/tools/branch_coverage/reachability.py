@@ -55,16 +55,24 @@ class Reachability:
         """Enumerate branches in the function identified by `qualname`.
         Boundary filter: only inspects functions whose source file lives
         under source_root."""
-        source_file = self._resolve_source_file(qualname, source_root)
-        if source_file is None:
+        resolved = self._resolve_source_file(qualname, source_root)
+        if resolved is None:
             return []
+        source_file, module_path = resolved
         try:
             tree = ast.parse(source_file.read_text())
         except (OSError, SyntaxError) as exc:
             _LOG.warning("Failed to parse %s: %s", source_file, exc)
             return []
 
-        func_def = self._find_function(tree, qualname)
+        # Tail beyond the module portion identifies the (possibly
+        # class-nested) function. e.g. for module=pkg.api and
+        # qualname=pkg.api.Controller.create, tail=["Controller", "create"].
+        tail_str = (
+            qualname[len(module_path) :].lstrip(".") if qualname.startswith(module_path) else ""
+        )
+        tail = tail_str.split(".") if tail_str else []
+        func_def = self._find_function(tree, tail)
         if func_def is None:
             return []
 
@@ -107,11 +115,37 @@ class Reachability:
             return str(source_file.relative_to(anchor))
         return str(source_file)
 
-    def _resolve_source_file(self, qualname: str, source_root: Path) -> Path | None:
-        """Map a qualified name (module.path.func) to a source file path.
-        Uses importlib to locate the module; returns None if the module
-        is not under source_root (boundary filter)."""
-        module_path = qualname.rsplit(".", 1)[0] if "." in qualname else qualname
+    def _resolve_source_file(self, qualname: str, source_root: Path) -> tuple[Path, str] | None:
+        """Map a qualified name (module.path[.Class].func) to (source_file, module_path).
+
+        Some qualnames include class-nested functions (e.g.
+        ``pkg.api.Controller.create``). The naive ``rsplit(".", 1)[0]``
+        produces ``pkg.api.Controller``, which ``find_spec`` rejects with
+        ModuleNotFoundError. To handle both cases, progressively shed
+        trailing components from the right until ``find_spec`` succeeds
+        or we run out of candidates.
+
+        Returns ``(source_file, module_path)`` so the caller can compute
+        the qualname tail (the "Class.func" portion) and walk it
+        accurately. Returns None if the module isn't importable, has no
+        origin, or lives outside ``source_root`` (boundary filter).
+        """
+        if "." not in qualname:
+            return self._try_module(qualname, source_root)
+
+        parts = qualname.split(".")
+        # Try longest module candidates first (`pkg.api.Controller.create`
+        # might genuinely be a submodule `Controller`); shed components
+        # one at a time until something resolves.
+        for end in range(len(parts) - 1, 0, -1):
+            candidate = ".".join(parts[:end])
+            resolved = self._try_module(candidate, source_root)
+            if resolved is not None:
+                return resolved
+        return None
+
+    @staticmethod
+    def _try_module(module_path: str, source_root: Path) -> tuple[Path, str] | None:
         try:
             spec = importlib.util.find_spec(module_path)
         except (ImportError, ModuleNotFoundError, ValueError):
@@ -123,24 +157,58 @@ class Reachability:
             source_file.relative_to(source_root)
         except ValueError:
             return None  # not under source_root
-        return source_file
+        return source_file, module_path
 
     @staticmethod
     def _find_function(
-        tree: ast.AST, qualname: str
+        tree: ast.AST, tail: list[str]
     ) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
-        target_name = qualname.rsplit(".", 1)[-1]
-        for node in ast.walk(tree):
-            if (
-                isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
-                and node.name == target_name
-            ):
-                return node
+        """Walk the qualname tail through nested ``ClassDef`` and
+        ``FunctionDef`` bodies to locate the target function.
+
+        For tail ``["Controller", "create"]``, descends into
+        ``class Controller:`` then returns the nested ``def create``.
+        For a bare tail ``["create"]`` (module-level function), matches
+        the first module-level ``def create``. Walking explicit body
+        children (not ``ast.walk``) prevents accidentally matching the
+        first ``create`` in a sibling class with multiple ``create`` defs.
+        """
+        if not tail:
+            return None
+
+        def _walk(
+            parent_body: list[ast.stmt], remaining: list[str]
+        ) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
+            if not remaining:
+                return None
+            head, *rest = remaining
+            for node in parent_body:
+                if not rest and isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+                    if node.name == head:
+                        return node
+                elif rest:
+                    if isinstance(node, ast.ClassDef) and node.name == head:
+                        found = _walk(node.body, rest)
+                        if found is not None:
+                            return found
+                    elif (
+                        isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+                        and node.name == head
+                    ):
+                        # Nested function (closure); descend into its body.
+                        found = _walk(node.body, rest)
+                        if found is not None:
+                            return found
+            return None
+
+        if isinstance(tree, ast.Module):
+            return _walk(tree.body, tail)
         return None
 
     @staticmethod
     def _condition_text(node: ast.AST) -> str:
         try:
             return ast.unparse(node).split("\n")[0].strip() or "(conditional arc)"
-        except Exception:  # noqa: BLE001
+        except (ValueError, AttributeError, RecursionError) as exc:
+            _LOG.debug("ast.unparse failed for %s: %s", type(node).__name__, exc)
             return "(conditional arc)"

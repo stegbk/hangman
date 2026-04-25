@@ -126,3 +126,77 @@ class TestBoundaryEnforcement:
         ep = _endpoint("/x", "pkg.a")
         result = Reachability().compute((ep,), external, minimal_app_source_root)
         assert result[ep] == []
+
+
+class TestClassMethodQualnameResolution:
+    """Per Phase 5 code-review iter 1 P1: class-method qualnames like
+    ``pkg.api.Controller.create`` were silently dropped because
+    ``rsplit(".", 1)[0]`` produced ``pkg.api.Controller`` (not a module),
+    and ``find_function`` matched the first ``create`` it saw via
+    ``ast.walk`` — both bugs masked branches in real handlers."""
+
+    def test_class_method_qualname_resolves_to_method_branches(
+        self, tmp_path: Path, monkeypatch: object
+    ) -> None:
+        # Arrange: build a source tree that mimics ``pkg.api`` with a
+        # class ``Controller`` containing a method ``create`` that has
+        # branches, plus a SIBLING ``create`` method on a different class
+        # to verify the walker descends into the right class (not just
+        # the first ``def create`` it finds).
+        import sys
+
+        pkg = tmp_path / "pkg"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("")
+        (pkg / "api.py").write_text(
+            "class Other:\n"
+            "    def create(self, x):\n"  # decoy — must NOT be matched
+            "        return x\n"
+            "\n"
+            "class Controller:\n"
+            "    def create(self, x):\n"
+            "        if x > 0:\n"
+            "            return 'pos'\n"
+            "        if x < 0:\n"
+            "            return 'neg'\n"
+            "        return 'zero'\n"
+        )
+
+        # Insert tmp_path at the front of sys.path so importlib.find_spec
+        # can locate ``pkg.api``. Use monkeypatch via a context manager so
+        # we restore sys.path on test exit.
+        sys.path.insert(0, str(tmp_path))
+        try:
+            # Invalidate any cached import state from a sibling test.
+            import importlib
+
+            importlib.invalidate_caches()
+
+            from tools.branch_coverage.callgraph import CallGraph
+
+            graph = CallGraph(adjacency={"pkg.api.Controller.create": frozenset()})
+            ep = _endpoint("/x", "pkg.api.Controller.create")
+
+            # Act
+            result = Reachability().compute((ep,), graph, tmp_path)
+
+            # Assert: 2 branches (the two `if` statements in Controller.create);
+            # zero branches from Other.create (which has none). The presence
+            # of >= 1 branch proves the resolver handled `Controller.create`
+            # qualname AND the walker found Controller.create specifically.
+            branches = result[ep]
+            assert len(branches) == 2, (
+                f"expected 2 branches from Controller.create, got {len(branches)}: "
+                f"{[b.condition_text for b in branches]}"
+            )
+            assert all(b.function_qualname == "pkg.api.Controller.create" for b in branches)
+            # Sanity: condition text reflects the Controller body, not Other.
+            condition_texts = [b.condition_text for b in branches]
+            assert any("x > 0" in ct for ct in condition_texts)
+            assert any("x < 0" in ct for ct in condition_texts)
+        finally:
+            sys.path.remove(str(tmp_path))
+            # Drop cached ``pkg`` so other tests using tmp_path-based
+            # ``pkg`` packages don't collide.
+            for mod_name in [m for m in list(sys.modules) if m == "pkg" or m.startswith("pkg.")]:
+                sys.modules.pop(mod_name, None)
