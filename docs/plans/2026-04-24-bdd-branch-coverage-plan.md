@@ -4013,13 +4013,15 @@ def run(
     ndjson_path: Path,
     output_path: Path,
     history_dir: Path,
-    features_glob: str = "frontend/tests/bdd/features/**/*.feature",
+    features_glob: Path,
     coverage_context: "CoverageContext | None" = None,  # NEW kwarg, default None
 ) -> None:
     # ... existing body unchanged, EXCEPT the renderer call (see below) ...
 ```
 
-The default `= None` keeps backward compatibility: existing test call-sites that invoke `analyzer.run(ndjson_path, output_path, history_dir)` without the new kwarg keep working — they receive `coverage_context = None`, and the renderer's "Code coverage" card falls through to its placeholder branch ("Run `make bdd-coverage` to enable").
+**Per plan-review iter 15 P2 (Codex):** `features_glob` is a `Path` (a directory, not a glob string). The existing implementation calls `features_glob.is_dir()` and `features_glob.rglob("*.feature")` in `_warn_on_orphans`. Do NOT change its type to `str` and do NOT introduce a glob-string default — that would break the existing `_warn_on_orphans` and existing call-sites that pass `args.features_dir` (a `Path`).
+
+The default `= None` on `coverage_context` keeps backward compatibility for existing test call-sites that invoke `analyzer.run(ndjson_path, output_path, history_dir, features_glob)` without the new kwarg — they receive `coverage_context = None`, and the renderer's "Code coverage" card falls through to its placeholder branch ("Run `make bdd-coverage` to enable").
 
 **Per plan-review iter 3 P1 fix:** Do NOT add `coverage_context = load_coverage_context_if_fresh(ndjson_path)` as a local variable inside `run()`. The load happens exactly once — in `__main__.py` (G2 Step 3). `run()` only consumes the value passed in.
 
@@ -4988,7 +4990,7 @@ After writing the complete plan, checked against the design spec with fresh eyes
 - `CallGraph` dataclass defined in C2 `callgraph.py`; C3 consumes it, F1 fake produces it for tests.
 - Method signature of `DashboardRenderer.render()` in E3 takes `(report, output_path)` — 2 args. Feature 2's renderer takes a different signature; no conflict because they're separate classes.
 - `tools.branch_coverage.analyzer.Analyzer.run()` (Feature 3, F1): `(app, coverage_file, source_root, json_output, html_output)` — consistent with F1's `test_analyzer.py` invocation. Feature-3 Analyzer is a separate class.
-- `tools.dashboard.analyzer.Analyzer.run()` (Feature 2, extended in G1): `(ndjson_path, output_path, history_dir, features_glob="…", coverage_context: CoverageContext | None = None)` — G1 adds the optional `coverage_context` kwarg with `= None` default; G2's `__main__.py` passes it from the loaded coverage context. Backward-compatible with existing dashboard test call-sites that don't pass the kwarg.
+- `tools.dashboard.analyzer.Analyzer.run()` (Feature 2, extended in G1): `(ndjson_path: Path, output_path: Path, history_dir: Path, features_glob: Path, coverage_context: CoverageContext | None = None)` — G1 adds ONLY the optional `coverage_context` kwarg with `= None` default; the four existing positional args (all `Path`) are unchanged. `features_glob` is a directory `Path`, not a glob string — `Analyzer._warn_on_orphans` calls `is_dir()` and `rglob()` on it (per plan-review iter 15 P2 Codex; matches existing implementation). G2's `__main__.py` passes the loaded coverage context. Backward-compatible: existing test call-sites that pass only the four positional args (no `coverage_context` kwarg) continue to work.
 - `LlmEvaluator.__init__` new `coverage_summary` kwarg (G2) — default `""` — backward-compatible for existing Feature 2 tests (verified by test_llm_client.py update pattern).
 
 **No type or signature drift.** All cross-task references check out.
