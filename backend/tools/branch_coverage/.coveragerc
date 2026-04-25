@@ -1,0 +1,19 @@
+[run]
+branch = true
+parallel = true
+sigterm = true
+concurrency = thread
+source = src/hangman
+# Per plan-review iter 4 P1 (Claude): align coverage.py's path format with
+# Reachability's path computation. With `cd backend` in backend-coverage.sh
+# below, `relative_files = true` makes measured_files() return
+# `src/hangman/game.py` (relative to backend/, the CWD at coverage-run time).
+# Reachability also emits `src/hangman/game.py` (via
+# source_file.relative_to(source_root.parent.parent) where source_root is the
+# absolute path to backend/src/hangman/). Both sides agree → audit math works.
+# Without this flag, measured_files() returns absolute paths and every
+# endpoint reports 0% / audit fails on every real run.
+relative_files = true
+
+[report]
+show_missing = true

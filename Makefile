@@ -1,4 +1,4 @@
-.PHONY: install backend backend-test frontend bdd test lint typecheck verify clean bdd-dashboard
+.PHONY: install backend backend-test frontend bdd test lint typecheck verify clean bdd-dashboard backend-coverage bdd-coverage
 
 # Port overrides. Default to the canonical 8000 / 3000; override on the command
 # line when those are occupied (e.g. SSH tunnel on 8000):
@@ -69,3 +69,28 @@ bdd-dashboard:  ## Generate the BDD quality dashboard (requires ANTHROPIC_API_KE
 	cd backend && uv run python -m tools.dashboard \
 	  --model $(or $(MODEL),claude-sonnet-4-6) \
 	  --max-workers $(or $(MAX_WORKERS),6)
+
+.PHONY: backend-coverage bdd-coverage
+
+backend-coverage:  ## Start backend under coverage instrumentation (Terminal 1; requires make bdd-coverage in Terminal 3)
+	bash scripts/backend-coverage.sh
+
+bdd-coverage:  ## Run BDD suite with coverage instrumentation + generate coverage report
+	@if [ ! -f .backend-coverage.pid ]; then \
+	  echo "ERROR: Backend not running under coverage. In another terminal: make backend-coverage"; \
+	  exit 2; \
+	fi
+	cd frontend && HANGMAN_BACKEND_PORT=$(HANGMAN_BACKEND_PORT) \
+	  pnpm exec cucumber-js \
+	  --format "message:test-results/cucumber.coverage.ndjson" \
+	  --format "progress-bar"
+	@PID=$$(cat .backend-coverage.pid) && \
+	  if kill -0 $$PID 2>/dev/null; then \
+	    kill -TERM $$PID; \
+	  else \
+	    echo "WARN: Backend PID $$PID not running; coverage data may be stale"; \
+	  fi
+	@rm -f .backend-coverage.pid
+	@sleep 2
+	cd backend && uv run coverage combine || echo "WARN: coverage combine found no fragments"
+	cd backend && uv run python -m tools.branch_coverage
