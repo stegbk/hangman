@@ -2981,19 +2981,31 @@ def _fixture_report() -> CoverageReport:
     fail-fast rejected by H1 Step 7b. The golden_coverage.json baked
     from this fixture is the worked example future maintainers will
     copy when adding new endpoints — it must show the right shape.
+
+    Per plan-review iter 11 P1 (Codex): all symbol names are grounded
+    in real Hangman files:
+    - `hangman.routes.start_game` is the real handler for `POST
+      /api/v1/games` (`backend/src/hangman/routes.py:127`).
+    - `hangman.words.WordPool.random_word` is reachable from
+      start_game via the word-pick flow
+      (`backend/src/hangman/words.py:22-25`); its `if category not in
+      self.categories` raise-KeyError branch is the real uncovered
+      example. NOT `hangman.game.new_game` (no such function) and
+      NOT `self._by_category` (the real attribute is
+      `self.categories`).
     """
-    ep = Endpoint(method="POST", path="/api/v1/games", handler_qualname="hangman.routes.create_game")
+    ep = Endpoint(method="POST", path="/api/v1/games", handler_qualname="hangman.routes.start_game")
     branch = ReachableBranch(
-        file="src/hangman/game.py",
-        line=42,
-        branch_id="42->45",
-        condition_text="if category not in self._by_category:",
-        not_taken_to_line=45,
-        function_qualname="hangman.game.new_game",
+        file="src/hangman/words.py",
+        line=23,
+        branch_id="23->24",
+        condition_text="if category not in self.categories:",
+        not_taken_to_line=24,
+        function_qualname="hangman.words.WordPool.random_word",
     )
     fc = FunctionCoverage(
-        file="src/hangman/game.py",
-        qualname="hangman.game.new_game",
+        file="src/hangman/words.py",
+        qualname="hangman.words.WordPool.random_word",
         total_branches=1,
         covered_branches=0,
         pct=0.0,
@@ -3049,7 +3061,7 @@ class TestEmit:
         ep = parsed["endpoints"][0]
         assert "uncovered_branches_flat" in ep
         assert len(ep["uncovered_branches_flat"]) == 1
-        assert ep["uncovered_branches_flat"][0]["function_qualname"] == "hangman.game.new_game"
+        assert ep["uncovered_branches_flat"][0]["function_qualname"] == "hangman.words.WordPool.random_word"
 
 
 class TestGoldenFile:
@@ -3428,7 +3440,7 @@ class TestRender:
         DashboardRenderer().render(_fixture_report(), out)
         html = out.read_text()
         assert "POST /api/v1/games" in html
-        assert "hangman.routes.create_game" in html
+        assert "hangman.routes.start_game" in html
 
     def test_reconciled_true_shows_no_warning_banner(self, tmp_path: Path) -> None:
         out = tmp_path / "coverage.html"
@@ -4321,9 +4333,13 @@ Then the response status is 201
 
 ```
 
-(Endpoint has uncovered `if category not in self._by_category` branch —
-scenario could include a "create a game for a missing category" variant
-and is missing it.)
+(`POST /api/v1/games` reaches `hangman.words.WordPool.random_word`
+which has an uncovered `if category not in self.categories: raise
+KeyError(...)` branch — scenario could include a "create a game for
+a missing category" variant and is missing it. Per plan-review iter
+11 P1 (Codex): real branch reference grounded in
+`backend/src/hangman/words.py:23` — NOT `self._by_category` (no such
+attribute).)
 
 **Passes:** the scenario covers the branch, OR the branch isn't
 plausibly reachable from the scenario's user intent.

@@ -1200,3 +1200,17 @@ The plan now:
 §12 risk #7 says "`CoverageContextMiddleware._resolve_context` prefers `request.scope["route"].path` (matched route template like `/games/{id}`)." This was wrong: `request.scope["route"]` is populated by Starlette's Router AFTER middleware dispatch, so the middleware always took the concrete-path fallback in production. Every path-param endpoint silently lost attribution.
 
 The plan's middleware now does its own route matching against `request.app.router.routes` via `route.matches(scope)` + `Match.FULL`, reading `route.path` (or `route.path_format`) on match. Tests assert the template, not the concrete path.
+
+### 14.5 — Hangman symbol names in fixtures and rubric examples
+
+**Iter 10–11 (commits `7710f67`, iter 11 follow-up).**
+
+§4.4, §5 example coverage.json, and §"Why this matters" rubric example use placeholder symbol names that don't match the real Hangman codebase:
+
+- `hangman.routes.create_game` → real handler is `hangman.routes.start_game` (`backend/src/hangman/routes.py:127`).
+- `hangman.game.new_game` → no such function exists. Real `game.py` exports `apply_guess`, `mask_word`, `compute_round_score`, `figure_stage`, `streak_multiplier`.
+- `if category not in self._by_category:` → real branch is `if category not in self.categories:` in `hangman.words.WordPool.random_word` (`backend/src/hangman/words.py:23`).
+- `POST /api/v1/games/{id}/forfeit` → no such route. Forfeit logic is part of `POST /api/v1/games` (auto-forfeit when starting a new game while one is in progress, see `routes.py:122`).
+- `forfeit.feature` is claimed not to exist in the BDD suite — it does (`frontend/tests/bdd/features/forfeit.feature`).
+
+The plan supersedes with real symbol names: `hangman.routes.start_game`, `hangman.words.WordPool.random_word`, the `self.categories` attribute, and a per-endpoint attribution check that uses `/categories MUST NOT reach apply_guess` instead of the nonexistent `/forfeit` shared-helper case. H1 Step 7b's live smoke is grounded against the real codebase as of iter 10–11.
