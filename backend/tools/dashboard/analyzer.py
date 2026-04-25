@@ -99,10 +99,20 @@ def _build_coverage_context(data: dict[str, Any]) -> CoverageContext | None:
             (str(ep["method"]), str(ep["path"]), float(ep["pct"]), str(ep["tone"]))
             for ep in data.get("endpoints", [])
         )
-        endpoints_uncovered_flat: dict[str, tuple[dict[str, Any], ...]] = {
-            f"{ep['method']} {ep['path']}": tuple(ep.get("uncovered_branches_flat", []))
-            for ep in data.get("endpoints", [])
-        }
+        # Per Phase 5 iter 5 P1 (Codex): validate `uncovered_branches_flat`
+        # element types. `build_coverage_summary` later does `b.get(...)`
+        # on each element, which crashes with AttributeError if any element
+        # is a string/None/etc. Reject non-dict elements here so the
+        # caller's except downgrades to None + schema-mismatch warning.
+        endpoints_uncovered_flat: dict[str, tuple[dict[str, Any], ...]] = {}
+        for ep in data.get("endpoints", []):
+            flat = ep.get("uncovered_branches_flat", [])
+            if not all(isinstance(b, dict) for b in flat):
+                raise ValueError(
+                    f"endpoint {ep.get('method', '?')} {ep.get('path', '?')}: "
+                    f"uncovered_branches_flat contains non-dict element"
+                )
+            endpoints_uncovered_flat[f"{ep['method']} {ep['path']}"] = tuple(flat)
         totals = data.get("totals", {})
         audit = data.get("audit", {})
         # Per Phase 5 iter 2 P1 (Codex): coerce scalar types so that a

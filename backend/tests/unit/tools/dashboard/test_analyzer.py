@@ -283,6 +283,68 @@ class TestCoverageAugmentation:
             for rec in caplog.records  # type: ignore[attr-defined]
         )
 
+    def test_non_dict_uncovered_branches_flat_returns_none_context(
+        self, tmp_path: Path, caplog: object
+    ) -> None:
+        """Per Phase 5 code-review iter 5 P1 (Codex):
+        `uncovered_branches_flat` element types weren't validated. A
+        coverage.json with a string or null element (e.g.,
+        `"uncovered_branches_flat": ["bad"]`) would survive
+        _build_coverage_context, then crash later in
+        build_coverage_summary at `b.get("file", "?")`
+        (AttributeError on str).
+
+        Fix: reject non-dict elements with ValueError; caller's except
+        downgrades to None + schema-mismatch warning."""
+        import json
+        import logging
+        from datetime import UTC, datetime
+
+        from tools.dashboard.analyzer import load_coverage_context_if_fresh
+
+        ndjson = tmp_path / "frontend" / "test-results" / "cucumber.ndjson"
+        ndjson.parent.mkdir(parents=True)
+        ndjson.write_text("")
+        cov_json = tmp_path / "tests" / "bdd" / "reports" / "coverage.json"
+        cov_json.parent.mkdir(parents=True)
+        cov_ts = datetime.fromtimestamp(ndjson.stat().st_mtime, tz=UTC).isoformat()
+        cov_json.write_text(
+            json.dumps(
+                {
+                    "timestamp": cov_ts,
+                    "totals": {
+                        "pct": 75.0,
+                        "tone": "warning",
+                        "covered_branches": 15,
+                        "total_branches": 20,
+                    },
+                    "endpoints": [
+                        {
+                            "method": "GET",
+                            "path": "/api/v1/games",
+                            "pct": 80.0,
+                            "tone": "success",
+                            # Bad: string element, not a dict
+                            "uncovered_branches_flat": ["this should be a dict"],
+                        }
+                    ],
+                    "audit": {"reconciled": True, "unattributed_branches": []},
+                }
+            )
+        )
+
+        with caplog.at_level(logging.WARNING):  # type: ignore[attr-defined]
+            cov = load_coverage_context_if_fresh(ndjson)
+
+        assert cov is None, (
+            "Expected None when uncovered_branches_flat has non-dict elements — "
+            "got a CoverageContext that would crash build_coverage_summary later."
+        )
+        assert any(
+            "schema mismatch" in rec.message
+            for rec in caplog.records  # type: ignore[attr-defined]
+        )
+
     def test_fresh_coverage_json_returns_context(self, tmp_path: Path) -> None:
         import json
         from datetime import UTC, datetime
