@@ -11,6 +11,7 @@ import ast
 import importlib.util
 import logging
 from collections import deque
+from collections.abc import Iterator
 from pathlib import Path
 
 from tools.branch_coverage.callgraph import CallGraph
@@ -86,7 +87,17 @@ class Reachability:
         # over-counts by 1 per except clause and breaks audit
         # reconciliation. Reachability must mirror coverage.py's branch
         # semantics for the audit invariant to hold.
-        for node in ast.walk(func_def):
+        #
+        # Per Phase 5 iter 6 P2 (Codex): we MUST stop the AST walk at
+        # nested FunctionDef / AsyncFunctionDef / ClassDef bodies. A naïve
+        # `ast.walk(func_def)` traverses into closures, local helper
+        # functions, and class bodies — counting THEIR branches as the
+        # enclosing function's. That inflates per-function totals,
+        # creates phantom uncovered branches, and breaks audit
+        # reconciliation when those nested helpers are never called.
+        # `_walk_skip_nested` recurses through children but treats each
+        # nested function/class as opaque (its own reachability concern).
+        for node in self._walk_skip_nested(func_def):
             if isinstance(node, ast.If | ast.While | ast.For):
                 line = node.lineno
                 cond_text = self._condition_text(node)
@@ -101,6 +112,29 @@ class Reachability:
                     )
                 )
         return branches
+
+    @staticmethod
+    def _walk_skip_nested(root: ast.AST) -> Iterator[ast.AST]:
+        """Yield every descendant of ``root`` EXCEPT the bodies of nested
+        FunctionDef / AsyncFunctionDef / ClassDef. The nested defs
+        themselves are yielded (a caller may want to know they exist),
+        but recursion stops at their boundaries — their branches belong
+        to those nested scopes, not ``root``.
+
+        Per Phase 5 iter 6 P2 (Codex): replaces a previous `ast.walk`
+        that incorrectly counted nested-helper branches as the enclosing
+        function's.
+        """
+        stack: list[ast.AST] = [root]
+        while stack:
+            node = stack.pop()
+            yield node
+            if node is not root and isinstance(
+                node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef
+            ):
+                # Stop here — don't descend into the nested scope.
+                continue
+            stack.extend(ast.iter_child_nodes(node))
 
     @staticmethod
     def _format_path(source_file: Path, source_root: Path) -> str:
