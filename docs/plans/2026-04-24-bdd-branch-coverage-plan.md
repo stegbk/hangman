@@ -3485,15 +3485,25 @@ def build_coverage_summary(ctx: CoverageContext) -> str:
     return "\n".join(lines)
 ```
 
-Then locate the top of `Analyzer.run()` and add:
+Then extend `Analyzer.run()`'s signature to accept `coverage_context` as an optional parameter. The caller (Feature 2's `__main__.py`, modified in G2 Step 3) will load `coverage_context` once and pass it in — `run()` itself does NOT re-load it. This single-load contract is what justifies G2's claim "Avoids loading `coverage.json` twice."
 
 ```python
-    coverage_context = load_coverage_context_if_fresh(ndjson_path)
+def run(
+    self,
+    ndjson_path: Path,
+    output_path: Path,
+    history_dir: Path,
+    features_glob: str = "frontend/tests/bdd/features/**/*.feature",
+    coverage_context: "CoverageContext | None" = None,  # NEW kwarg, default None
+) -> None:
+    # ... existing body unchanged, EXCEPT the renderer call (see below) ...
 ```
 
-(no `self.` — calls the module-level function.)
+The default `= None` keeps backward compatibility: existing test call-sites that invoke `analyzer.run(ndjson_path, output_path, history_dir)` without the new kwarg keep working — they receive `coverage_context = None`, and the renderer's "Code coverage" card falls through to its placeholder branch ("Run `make bdd-coverage` to enable").
 
-**Note:** `build_coverage_summary` is moved here from G2 (where it was previously documented as a separate piece). G1 owns the function definition; G2 just imports and uses it.
+**Per plan-review iter 3 P1 fix:** Do NOT add `coverage_context = load_coverage_context_if_fresh(ndjson_path)` as a local variable inside `run()`. The load happens exactly once — in `__main__.py` (G2 Step 3). `run()` only consumes the value passed in.
+
+**Note:** `build_coverage_summary` is module-level here in G1 (where it's defined). G2 just imports and uses it.
 
 Also add the import at the top of `analyzer.py`:
 
@@ -3501,12 +3511,12 @@ Also add the import at the top of `analyzer.py`:
 from tools.dashboard.models import CoverageContext
 ```
 
-And thread `coverage_context` through to the renderer in `run()`:
+And thread the parameter `coverage_context` through to the renderer in `run()`:
 
 ```python
         self.renderer.render(
             context, findings, list(grades), history_entries,
-            skipped, summary, coverage_context, output_path,  # NEW arg
+            skipped, summary, coverage_context, output_path,  # NEW arg — uses the parameter
         )
 ```
 

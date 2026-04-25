@@ -59,7 +59,7 @@ Ready for **Feature 3: bdd-branch-coverage** (call graph + per-branch coverage c
 - [x] Contrarian gate passed (Codex VALIDATE — narrow-scope prompt returned clean with 4 flags; 2 already addressed, 2 new P1/P2 patched inline in commit `75a7708`: audit dedup across endpoints + switch pyan3 from subprocess+DOT to Python API via CallGraphVisitor)
 - [ ] Council verdict (if triggered): [approach chosen]
 - [x] Plan written (`docs/plans/2026-04-24-bdd-branch-coverage-plan.md` — 16 tasks across 8 phases, ~3950 lines after formatter, dispatch plan with 3 parallel waves after scaffold, self-review pass with 6 highest-risk areas flagged for plan-review loop)
-- [ ] Plan review loop (0 iterations) — iterate until no P0/P1/P2
+- [ ] Plan review loop (3 iterations) — Iter 1 (Claude + Codex): 5×P1 + 3×P2 patched in `9d4b318` (added task A3 spike). Iter 2 (Claude + Codex): 2×P1 patched in `b6b25b6` (G1 module-level helpers; A3 `arc_possibilities` validation). Iter 3 (Claude scope-clarified + Codex CLEAN): 1×P1 patched (G1↔G2 `Analyzer.run()` signature mismatch — `coverage_context` kwarg threading). Iter 4 next.
 - [ ] TDD execution complete
 - [ ] Code review loop (0 iterations) — iterate until no P0/P1/P2
 - [ ] Simplified
