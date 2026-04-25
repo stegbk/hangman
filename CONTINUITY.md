@@ -43,8 +43,8 @@ Ready for **Feature 3: bdd-branch-coverage** (call graph + per-branch coverage c
 | Field     | Value                            |
 | --------- | -------------------------------- |
 | Command   | /new-feature bdd-branch-coverage |
-| Phase     | 3 — Design                       |
-| Next step | `/superpowers:brainstorming`     |
+| Phase     | 3 — Design (plan review)         |
+| Next step | Phase 3.3 plan review loop       |
 
 ### Checklist
 
@@ -54,11 +54,11 @@ Ready for **Feature 3: bdd-branch-coverage** (call graph + per-branch coverage c
 - [x] PRD created (`docs/prds/bdd-branch-coverage.md` v1.0 — 8 user stories, 9 non-goals, 8 success metrics, 7 open questions for design/research)
 - [x] Research artifact produced (`docs/research/2026-04-24-bdd-branch-coverage.md` — 5 libs, 5 design-changing findings, 8 open risks. Headline: **pyan3 over pycg** (pycg archived 2023; pyan3 revived 2026-02 with 3.10-3.14 support, 91% self-coverage, latest 2.5.0 on 2026-04-21). Resolves PRD Q1 + Q4. Use `coverage run --branch --parallel-mode -m uvicorn` subprocess approach.)
 - [ ] Design guidance loaded (if UI)
-- [ ] Brainstorming complete
-- [ ] Approach comparison filled
-- [ ] Contrarian gate passed (skip | spike | council)
+- [x] Brainstorming complete (`docs/plans/2026-04-24-bdd-branch-coverage-design.md` v1.0 — 13 sections, ~890 lines; all 7 PRD open questions + 5 plan-phase details resolved; approved by KC)
+- [x] Approach comparison filled (see § "Approach Comparison" below — default = full static + dynamic + audit reconciliation; alternative = pure dynamic, falsified at PRD-requirement level)
+- [x] Contrarian gate passed (Codex VALIDATE — narrow-scope prompt returned clean with 4 flags; 2 already addressed, 2 new P1/P2 patched inline in commit `75a7708`: audit dedup across endpoints + switch pyan3 from subprocess+DOT to Python API via CallGraphVisitor)
 - [ ] Council verdict (if triggered): [approach chosen]
-- [ ] Plan written
+- [x] Plan written (`docs/plans/2026-04-24-bdd-branch-coverage-plan.md` — 16 tasks across 8 phases, ~3950 lines after formatter, dispatch plan with 3 parallel waves after scaffold, self-review pass with 6 highest-risk areas flagged for plan-review loop)
 - [ ] Plan review loop (0 iterations) — iterate until no P0/P1/P2
 - [ ] TDD execution complete
 - [ ] Code review loop (0 iterations) — iterate until no P0/P1/P2
@@ -75,6 +75,44 @@ Ready for **Feature 3: bdd-branch-coverage** (call graph + per-branch coverage c
 - [ ] PR created
 - [ ] PR reviews addressed
 - [ ] Branch finished
+
+---
+
+## Approach Comparison
+
+### Chosen Default
+
+**Python OO package at `backend/tools/branch_coverage/`** combining:
+
+1. **Reflective FastAPI route enumeration** (`from hangman.main import app; app.routes`) — authoritative endpoint list, replacing Feature 2's regex scrape.
+2. **Static call-graph via pyan3** (subprocess) — best-effort reachability from each route handler through `backend/src/hangman/`.
+3. **Dynamic `coverage.py --branch`** (subprocess under uvicorn via `coverage run`) — records which branches the BDD suite actually exercises.
+4. **Audit reconciliation** against coverage.py's authoritative per-file branch count — any gap lands in `unattributed_branches`; ensures we never silently over-report.
+5. **`coverage.json` single source of truth** consumed by Feature 2's dashboard (new "Code coverage" card + coverage summary injected into the cached LLM system prompt for coverage-aware findings via new rubric criterion D7).
+
+### Best Credible Alternative
+
+**Pure dynamic coverage — no static call-graph, no per-endpoint attribution.** Run `coverage.py --branch` over the BDD suite, emit a standard `coverage html` report, treat "which endpoints have uncovered branches" as outside scope. ~200 LOC instead of ~1000-1500. Keeps the same Make target shape. Loses: per-endpoint reachability attribution, audit reconciliation, integration with Feature 2's dashboard beyond "here's a link to the standard coverage report."
+
+### Scoring (fixed axes)
+
+| Axis                  | Default (full: static + dynamic + audit)                             | Alternative (pure dynamic)                                                                   |
+| --------------------- | -------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| Complexity            | **M** (11 modules, pyan3 subprocess, reconciliation logic)           | **L** (coverage.py + a thin wrapper)                                                         |
+| Blast Radius          | **L** (new dev tool + 5 files modified in Feature 2)                 | **L** (new dev tool, minimal Feature 2 changes)                                              |
+| Reversibility         | **M** (pyan3 dep + dashboard augmentation are additive)              | **L** (just a coverage report)                                                               |
+| Time to Validate      | **M** (integration test + audit invariant checks)                    | **L** (standard coverage.py validation)                                                      |
+| User/Correctness Risk | **M** — pyan3 is best-effort; audit reconciliation is the safety net | **M** — no endpoint attribution means PRD US-001 / US-003 / US-005 / US-006 aren't satisfied |
+
+### Cheapest Falsifying Test
+
+**Already falsified by the PRD.** US-001 ("per-endpoint code-path coverage"), US-003 ("endpoints enumerated from routes.py"), US-005 ("Feature 2 dashboard augmentation"), and US-006 ("LLM coverage-aware") all require per-endpoint attribution. The pure-dynamic alternative delivers a coverage.html file but no endpoint-centric view — it fails the PRD at the requirements level, not at the implementation level. No spike needed; the PRD is the falsifying test.
+
+A secondary validation: the research brief's "pyan3 ratified" finding (2.5.0 revived 2026-02, 3 days ago; pycg archived) means the default's static-analysis leg has a maintained tool. That was the risk that might have forced us toward the pure-dynamic fallback — it's no longer load-bearing.
+
+### Contrarian verdict
+
+**Expected: VALIDATE.** The default is the only approach that satisfies the PRD's per-endpoint attribution requirement. The alternative exists in the comparison to prove we considered a simpler path and rejected it for a specific, documented reason (PRD scope). Codex contrarian gate should confirm no alternative was missed.
 
 ---
 
