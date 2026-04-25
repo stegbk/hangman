@@ -4754,74 +4754,51 @@ print(f'✓ Path-format invariant holds ({len(all_files)} files all match src/ha
 
 If this fails, coverage attribution is silently broken across the entire run; the rest of Step 7b will give false signals. Stop and fix.
 
-**Then the shared-helper correctness check.**
+**Then the per-endpoint attribution correctness check.**
 
-The Hangman codebase has a known shared helper: `hangman.game.apply_guess` is reachable from both `POST /api/v1/games/{id}/guesses` (every guess scenario) and `POST /api/v1/games/{id}/forfeit` (forfeit calls apply_guess to mark the game lost). The BDD suite has scenarios for `/guesses` but no scenarios for `/forfeit` (verify with `grep -r "forfeit" frontend/tests/bdd/features/`).
+Per plan-review iter 10 P1 (Codex): the previous version of this section claimed `apply_guess` is shared between `POST /games/{id}/guesses` and `POST /games/{id}/forfeit`, and that `/forfeit` had no BDD scenarios. **Both claims were wrong against the actual Hangman codebase:** there is no `/games/{id}/forfeit` route (forfeit logic is part of `POST /api/v1/games` — the create-game handler auto-forfeits any in-progress game; see `backend/src/hangman/routes.py:122`), `apply_guess` is only called from `POST /games/{game_id}/guesses` (lines 228 + 246), and `frontend/tests/bdd/features/forfeit.feature` exists with multiple scenarios. The check was unprovable — replaced with three real codebase facts:
+
+1. **Positive (line-level matching):** `POST /games/{game_id}/guesses` MUST reach `apply_guess` AND credit at least one of its branches (extensive guess scenarios in the BDD suite). Catches Grader regression to exact arc-id matching.
+2. **Negative (no over-attribution):** `GET /api/v1/categories` MUST NOT have `apply_guess` in its `reachable_functions`. It's a side-effect-free read endpoint with no path through guess logic. If `apply_guess` shows up there, either Reachability is over-following the call graph or the middleware is collapsing contexts.
+3. **Negative (per-context isolation):** `apply_guess`'s `covered_branches` count under `POST /games/{game_id}/guesses` MUST be greater than under `GET /api/v1/categories`. Same `apply_guess` function across two endpoints — different per-context hit sets means middleware is correctly isolating contexts.
 
 Run:
 
 ```bash
 cd backend && uv run python -c "
-import json
+import json, sys
 data = json.loads(open('../tests/bdd/reports/coverage.json').read())
 
-# Find the two endpoints.
 guesses = next((e for e in data['endpoints']
                 if e['method'] == 'POST' and 'guesses' in e['path']), None)
-forfeit = next((e for e in data['endpoints']
-                if e['method'] == 'POST' and 'forfeit' in e['path']), None)
+categories = next((e for e in data['endpoints']
+                   if e['method'] == 'GET' and 'categories' in e['path']), None)
+
+if guesses is None:
+    print('❌ POST /games/{game_id}/guesses not found in coverage.json — '
+          'RouteEnumerator missed it. Verify against routes.py.')
+    sys.exit(2)
+if categories is None:
+    print('⚠ GET /categories not found in coverage.json — skipping '
+          'negative-attribution check. Verify RouteEnumerator output.')
 
 print(f'POST /guesses: pct={guesses[\"pct\"]:.1f}%, tone={guesses[\"tone\"]}')
-if forfeit:
-    print(f'POST /forfeit: pct={forfeit[\"pct\"]:.1f}%, tone={forfeit[\"tone\"]}')
+if categories is not None:
+    print(f'GET /categories: pct={categories[\"pct\"]:.1f}%, tone={categories[\"tone\"]}')
 
-    # Compare reachable functions.
-    g_funcs = {f['qualname'] for f in guesses['reachable_functions']}
-    f_funcs = {f['qualname'] for f in forfeit['reachable_functions']}
-    shared = g_funcs & f_funcs
-    print(f'Shared reachable functions: {len(shared)}')
-    print(f'  Examples: {list(shared)[:3]}')
-
-    # The correctness assertion: if /forfeit has scenarios that DON'T
-    # cover the shared apply_guess branches, /forfeit should show those
-    # branches as uncovered EVEN THOUGH /guesses' scenarios covered
-    # them under /guesses' context.
-    apply_guess_uncov_in_forfeit = [
-        b for b in forfeit['uncovered_branches_flat']
-        if 'apply_guess' in b.get('function_qualname', '')
-    ]
-    if apply_guess_uncov_in_forfeit:
-        print(f'✓ Per-endpoint attribution working: '
-              f'{len(apply_guess_uncov_in_forfeit)} apply_guess branches '
-              f'uncovered under /forfeit context')
-    else:
-        print('⚠ /forfeit shows apply_guess as fully covered — '
-              'either there are forfeit scenarios that do exercise '
-              'apply_guess, OR the middleware is over-attributing.')
-else:
-    print('⚠ /forfeit endpoint not found — Hangman may not have this route, '
-          'or RouteEnumerator did not pick it up. Verify against routes.py.')
-
-# Per plan-review iter 8 P1 (Codex): POSITIVE assertion that line-level
-# matching is actually working. The forfeit-uncovered check is necessary
-# but not sufficient — if the Grader regressed to exact (file, branch_id)
-# matching, /guesses would also fail to credit apply_guess (because
-# coverage.py's real arc IDs don't match Reachability's synthetic ones),
-# AND /forfeit would still show uncovered. The smoke would pass for the
-# wrong reason. Asserting that /guesses POSITIVELY credits apply_guess
-# branches catches that regression.
+# Check 1: POSITIVE — /guesses credits apply_guess branches.
 g_apply_guess_funcs = [
     fn for fn in guesses['reachable_functions']
     if 'apply_guess' in fn['qualname']
 ]
 g_apply_guess_covered = sum(fn['covered_branches'] for fn in g_apply_guess_funcs)
 g_apply_guess_total = sum(fn['total_branches'] for fn in g_apply_guess_funcs)
-print(f'/guesses apply_guess coverage: {g_apply_guess_covered}/{g_apply_guess_total} branches')
-import sys
+print(f'/guesses apply_guess: {g_apply_guess_covered}/{g_apply_guess_total} '
+      f'branches covered')
 if g_apply_guess_total == 0:
     print('⚠ apply_guess has 0 reachable_branches under /guesses — '
           'Reachability may have missed the function. Verify pyan3 graph.')
-    # Not a hard fail — could be a static-analysis miss; warn and continue.
+    # Not a hard fail — Reachability miss is a static-analysis limitation.
 elif g_apply_guess_covered == 0:
     print('❌ /guesses shows ZERO covered apply_guess branches despite '
           'extensive guess scenarios.')
@@ -4832,15 +4809,32 @@ elif g_apply_guess_covered == 0:
 else:
     print(f'✓ Line-level matching works: /guesses credits '
           f'{g_apply_guess_covered}/{g_apply_guess_total} apply_guess branches')
+
+# Check 2: NEGATIVE — /categories MUST NOT reach apply_guess.
+if categories is not None:
+    cat_funcs = {fn['qualname'] for fn in categories['reachable_functions']}
+    cat_apply_guess = [q for q in cat_funcs if 'apply_guess' in q]
+    if cat_apply_guess:
+        print(f'❌ /categories has apply_guess in reachable_functions: '
+              f'{cat_apply_guess}.')
+        print('   Either Reachability is over-following the call graph, OR '
+              'the middleware is collapsing contexts (every hit lands in '
+              'every context).')
+        sys.exit(2)
+    print('✓ Per-endpoint isolation: /categories does NOT reach apply_guess')
+
+# Check 3: NEGATIVE — apply_guess coverage MUST differ between endpoints.
+# This requires both endpoints to see apply_guess as reachable; if /categories
+# doesn't (per check 2), this check is satisfied trivially.
 "
 ```
 
 **Acceptance:**
 
-- If the path-format invariant + vacuous-PASS guard pass AND the shared-helper attribution warning fires (`/forfeit` shows uncovered) AND `/guesses` POSITIVELY credits apply_guess branches: line-level matching + per-endpoint attribution both work. Proceed.
+- Path-format invariant + vacuous-PASS guard pass AND `/guesses` POSITIVELY credits apply_guess branches AND `/categories` does NOT reach apply_guess: line-level matching + per-endpoint isolation both work. Proceed.
 - If `/guesses` shows 0 covered apply_guess branches: Grader regressed to exact arc-id matching — investigate `_grade_endpoint`'s `_arc_source_line` projection.
-- If `/forfeit` shows 100% coverage on shared helpers despite having no scenarios: middleware is broken — investigate. Likely causes: `coverage.Coverage.current()` returns None at request time, `switch_context` argument format mismatch, route templates don't match Grader's lookup keys.
-- If `/forfeit` doesn't exist as a route: pick another shared-helper case from the actual Hangman API surface; the principle holds.
+- If `/categories` shows apply_guess as reachable: investigate either Reachability's call-graph BFS bounds (it should stop at the per-endpoint subgraph) OR the middleware's context isolation (single uvicorn worker + sequential cucumber are required — see design spec §12 risk #6).
+- If RouteEnumerator misses `/games/{game_id}/guesses` or `/api/v1/categories`: investigate `routes.py` import + `app.routes` enumeration.
 
 - [ ] **Step 8: Verify Feature 2 augmentation**
 
