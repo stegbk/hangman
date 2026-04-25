@@ -87,7 +87,7 @@ class TestAutoescape:
     def test_html_tags_in_evidence_are_escaped(self, tmp_path: Path) -> None:
         out = tmp_path / "dashboard.html"
         ctx, findings, grades, history, summary = _deterministic_inputs()
-        DashboardRenderer().render(ctx, findings, grades, history, (), summary, out)
+        DashboardRenderer().render(ctx, findings, grades, history, (), summary, None, out)
         html = out.read_text()
         assert "<script>alert(1)</script>" not in html
         assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
@@ -102,7 +102,7 @@ class TestGoldenFile:
         """
         out = tmp_path / "dashboard.html"
         ctx, findings, grades, history, summary = _deterministic_inputs()
-        DashboardRenderer().render(ctx, findings, grades, history, (), summary, out)
+        DashboardRenderer().render(ctx, findings, grades, history, (), summary, None, out)
         golden = (fixtures_dir / "golden_render.html").read_text()
         assert out.read_text() == golden
 
@@ -118,6 +118,7 @@ class TestWarningBanner:
             history,
             ("feature:features/x.feature",),
             summary,
+            None,
             out,
         )
         html = out.read_text()
@@ -127,7 +128,7 @@ class TestWarningBanner:
     def test_no_banner_when_nothing_skipped(self, tmp_path: Path) -> None:
         out = tmp_path / "dashboard.html"
         ctx, findings, grades, history, summary = _deterministic_inputs()
-        DashboardRenderer().render(ctx, findings, grades, history, (), summary, out)
+        DashboardRenderer().render(ctx, findings, grades, history, (), summary, None, out)
         html = out.read_text()
         assert "warning-banner" not in html
 
@@ -147,7 +148,9 @@ class TestLlmInventedBadge:
             fix_example="x",
             is_recognized_criterion=False,
         )
-        DashboardRenderer().render(ctx, findings + [invented], grades, history, (), summary, out)
+        DashboardRenderer().render(
+            ctx, findings + [invented], grades, history, (), summary, None, out
+        )
         html = out.read_text()
         assert "LLM-invented" in html or "⚠" in html
 
@@ -168,7 +171,7 @@ class TestFeatureLevelFindings:
             is_recognized_criterion=True,
         )
         DashboardRenderer().render(
-            ctx, findings + [feat_finding], grades, history, (), summary, out
+            ctx, findings + [feat_finding], grades, history, (), summary, None, out
         )
         html = out.read_text()
         assert "Feature-level findings" in html
@@ -178,7 +181,7 @@ class TestFeatureLevelFindings:
     def test_no_feature_section_when_empty(self, tmp_path: Path) -> None:
         out = tmp_path / "dashboard.html"
         ctx, findings, grades, history, summary = _deterministic_inputs()
-        DashboardRenderer().render(ctx, findings, grades, history, (), summary, out)
+        DashboardRenderer().render(ctx, findings, grades, history, (), summary, None, out)
         html = out.read_text()
         assert "Feature-level findings" not in html
 
@@ -200,8 +203,60 @@ class TestRunDataJsSafety:
                 skipped_packages=(),
             )
         ]
-        DashboardRenderer().render(ctx, findings, grades, poisoned_history, (), summary, out)
+        DashboardRenderer().render(ctx, findings, grades, poisoned_history, (), summary, None, out)
         html = out.read_text()
         # tojson escapes '/' so </script> cannot appear verbatim inside the
         # JSON island.
         assert "</script><script>alert(1)</script>" not in html
+
+
+class TestCoverageCard:
+    def test_card_present_when_context_provided(self, tmp_path: Path) -> None:
+        from tools.dashboard.models import CoverageContext
+
+        ctx, findings, grades, history, summary = _deterministic_inputs()
+        cov_ctx = CoverageContext(
+            timestamp="2026-04-24T12:00:00Z",
+            totals_pct=69.0,
+            totals_tone="warning",
+            totals_covered_branches=98,
+            totals_total_branches=142,
+            endpoints_summary=(),
+            endpoints_uncovered_flat={},
+            audit_reconciled=True,
+            audit_unattributed_count=0,
+        )
+        out = tmp_path / "dashboard.html"
+        DashboardRenderer().render(ctx, findings, grades, history, (), summary, cov_ctx, out)
+        html = out.read_text()
+        assert "Code coverage" in html
+        assert "69%" in html
+        assert "98/142 branches" in html
+
+    def test_placeholder_when_context_none(self, tmp_path: Path) -> None:
+        ctx, findings, grades, history, summary = _deterministic_inputs()
+        out = tmp_path / "dashboard.html"
+        DashboardRenderer().render(ctx, findings, grades, history, (), summary, None, out)
+        html = out.read_text()
+        assert "Code coverage" in html
+        assert "make bdd-coverage" in html
+
+    def test_audit_failed_subtitle(self, tmp_path: Path) -> None:
+        from tools.dashboard.models import CoverageContext
+
+        ctx, findings, grades, history, summary = _deterministic_inputs()
+        cov_ctx = CoverageContext(
+            timestamp="2026-04-24T12:00:00Z",
+            totals_pct=50.0,
+            totals_tone="error",
+            totals_covered_branches=5,
+            totals_total_branches=10,
+            endpoints_summary=(),
+            endpoints_uncovered_flat={},
+            audit_reconciled=False,
+            audit_unattributed_count=3,
+        )
+        out = tmp_path / "dashboard.html"
+        DashboardRenderer().render(ctx, findings, grades, history, (), summary, cov_ctx, out)
+        html = out.read_text()
+        assert "audit failed" in html

@@ -12,6 +12,7 @@ from tools.dashboard.llm.cost import compute_cost
 from tools.dashboard.models import (
     AnalysisContext,
     CostReport,
+    CoverageContext,
     Finding,
     Outcome,
     RunSummary,
@@ -29,6 +30,96 @@ def _sort_findings(findings: list[Finding]) -> list[Finding]:
         return (_SEVERITY_ORDER[f.severity], f.criterion_id, path, line)
 
     return sorted(findings, key=key)
+
+
+def load_coverage_context_if_fresh(ndjson_path: Path) -> CoverageContext | None:
+    """Returns CoverageContext if tests/bdd/reports/coverage.json
+    exists AND its timestamp is within 1 hour of ndjson's mtime.
+    Otherwise None.
+
+    Module-level (not an Analyzer method) so __main__.py can call it
+    before constructing Analyzer + LlmEvaluator.
+    """
+    import json
+    from datetime import UTC, datetime, timedelta
+
+    coverage_json_path = (
+        ndjson_path.parent.parent.parent / "tests" / "bdd" / "reports" / "coverage.json"
+    )
+    if not coverage_json_path.exists():
+        _LOG.info("No coverage.json found at %s — rendering placeholder", coverage_json_path)
+        return None
+    try:
+        data = json.loads(coverage_json_path.read_text())
+    except (json.JSONDecodeError, OSError) as exc:
+        _LOG.warning("coverage.json parse failed: %s", exc)
+        return None
+    cov_ts_str = data.get("timestamp", "")
+    try:
+        cov_ts = datetime.fromisoformat(cov_ts_str.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    ndjson_mtime = datetime.fromtimestamp(ndjson_path.stat().st_mtime, tz=UTC)
+    if abs((cov_ts - ndjson_mtime).total_seconds()) > timedelta(hours=1).total_seconds():
+        _LOG.warning("coverage.json is stale vs. cucumber.ndjson — ignoring")
+        return None
+    return _build_coverage_context(data)
+
+
+def _build_coverage_context(data: dict[str, Any]) -> CoverageContext:
+    """Module-level helper. Underscore-prefixed (internal to analyzer.py)."""
+    endpoints_summary = tuple(
+        (ep["method"], ep["path"], ep["pct"], ep["tone"]) for ep in data.get("endpoints", [])
+    )
+    endpoints_uncovered_flat: dict[str, tuple[dict[str, Any], ...]] = {
+        f"{ep['method']} {ep['path']}": tuple(ep.get("uncovered_branches_flat", []))
+        for ep in data.get("endpoints", [])
+    }
+    totals = data.get("totals", {})
+    audit = data.get("audit", {})
+    return CoverageContext(
+        timestamp=data.get("timestamp", ""),
+        totals_pct=totals.get("pct", 0.0),
+        totals_tone=totals.get("tone", ""),
+        totals_covered_branches=totals.get("covered_branches", 0),
+        totals_total_branches=totals.get("total_branches", 0),
+        endpoints_summary=endpoints_summary,
+        endpoints_uncovered_flat=endpoints_uncovered_flat,
+        audit_reconciled=audit.get("reconciled", True),
+        audit_unattributed_count=len(audit.get("unattributed_branches", [])),
+    )
+
+
+def build_coverage_summary(ctx: CoverageContext) -> str:
+    """Format a CoverageContext as the human/LLM-readable summary string
+    that gets injected into the cached system prompt. Module-level so
+    __main__.py can call it directly."""
+    lines = [
+        "## Coverage context for this run",
+        "",
+        f"The BDD suite achieved {ctx.totals_pct:.0f}% branch coverage "
+        f"on backend/src/hangman/ "
+        f"({ctx.totals_covered_branches} of {ctx.totals_total_branches} branches).",
+        "",
+        "Per-endpoint uncovered branches (use when emitting D7 findings):",
+    ]
+    for method, path, pct, _tone in ctx.endpoints_summary:
+        key = f"{method} {path}"
+        uncovered = ctx.endpoints_uncovered_flat.get(key, ())
+        if not uncovered:
+            continue
+        lines.append(f"- {method} {path} ({pct:.0f}% covered):")
+        for b in uncovered[:10]:  # cap at 10 per endpoint to keep prompt small
+            lines.append(
+                f'  - {b.get("file", "?")}:{b.get("line", "?")} "{b.get("condition_text", "?")}"'
+            )
+    lines.append("")
+    lines.append(
+        "When evaluating scenarios, reference this data. If a scenario hits "
+        "an endpoint with uncovered branches, emit a D7 finding only if the "
+        "scenario plausibly could exercise those branches and doesn't."
+    )
+    return "\n".join(lines)
 
 
 class Analyzer:
@@ -54,6 +145,7 @@ class Analyzer:
         output_path: Path,
         history_dir: Path,
         features_glob: Path,
+        coverage_context: CoverageContext | None = None,
     ) -> None:
         parse_result = self.parser.parse(ndjson_path)
         self._warn_on_orphans(features_glob, parse_result.gherkin_document_uris)
@@ -84,6 +176,7 @@ class Analyzer:
             history_entries,
             skipped,
             summary,
+            coverage_context,
             output_path,
         )
         self._print_cost_report(cost, skipped)

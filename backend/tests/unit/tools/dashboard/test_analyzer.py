@@ -92,3 +92,91 @@ class TestFindingSort:
         ]
         sorted_ = _sort_findings(findings)
         assert [f.severity for f in sorted_] == [Severity.P0, Severity.P1, Severity.P3]
+
+
+class TestCoverageAugmentation:
+    def test_missing_coverage_json_returns_none_context(self, tmp_path: Path) -> None:
+        # No coverage.json file present → CoverageContext is None, no crash.
+        # Module-level function — no Analyzer instance needed.
+        from tools.dashboard.analyzer import load_coverage_context_if_fresh
+
+        # Construct a path that mirrors the expected layout
+        # (parent.parent.parent / tests / bdd / reports / coverage.json must NOT exist).
+        ndjson = tmp_path / "frontend" / "test-results" / "cucumber.ndjson"
+        ndjson.parent.mkdir(parents=True)
+        ndjson.write_text("")
+        cov = load_coverage_context_if_fresh(ndjson)
+        assert cov is None
+
+    def test_stale_coverage_json_returns_none(self, tmp_path: Path) -> None:
+        import json
+
+        from tools.dashboard.analyzer import load_coverage_context_if_fresh
+
+        # Create a coverage.json with a timestamp >1h older than ndjson mtime.
+        ndjson = tmp_path / "frontend" / "test-results" / "cucumber.ndjson"
+        ndjson.parent.mkdir(parents=True)
+        ndjson.write_text("")
+        cov_json = tmp_path / "tests" / "bdd" / "reports" / "coverage.json"
+        cov_json.parent.mkdir(parents=True)
+        cov_json.write_text(
+            json.dumps(
+                {
+                    "timestamp": "2020-01-01T00:00:00Z",
+                    "totals": {
+                        "pct": 50.0,
+                        "tone": "warning",
+                        "covered_branches": 5,
+                        "total_branches": 10,
+                    },
+                    "endpoints": [],
+                    "audit": {"reconciled": True, "unattributed_branches": []},
+                }
+            )
+        )
+        cov = load_coverage_context_if_fresh(ndjson)
+        assert cov is None  # too stale
+
+    def test_fresh_coverage_json_returns_context(self, tmp_path: Path) -> None:
+        import json
+        from datetime import UTC, datetime
+
+        from tools.dashboard.analyzer import load_coverage_context_if_fresh
+
+        ndjson = tmp_path / "frontend" / "test-results" / "cucumber.ndjson"
+        ndjson.parent.mkdir(parents=True)
+        ndjson.write_text("")
+        cov_json = tmp_path / "tests" / "bdd" / "reports" / "coverage.json"
+        cov_json.parent.mkdir(parents=True)
+        # Use the ndjson's mtime so the timestamps match within 1h.
+        cov_ts = datetime.fromtimestamp(ndjson.stat().st_mtime, tz=UTC).isoformat()
+        cov_json.write_text(
+            json.dumps(
+                {
+                    "timestamp": cov_ts,
+                    "totals": {
+                        "pct": 75.0,
+                        "tone": "warning",
+                        "covered_branches": 75,
+                        "total_branches": 100,
+                    },
+                    "endpoints": [
+                        {
+                            "method": "GET",
+                            "path": "/api/v1/games",
+                            "pct": 80.0,
+                            "tone": "warning",
+                            "uncovered_branches_flat": [],
+                        }
+                    ],
+                    "audit": {"reconciled": True, "unattributed_branches": []},
+                }
+            )
+        )
+        cov = load_coverage_context_if_fresh(ndjson)
+        assert cov is not None
+        assert cov.totals_pct == 75.0
+        assert cov.totals_covered_branches == 75
+        assert cov.totals_total_branches == 100
+        assert cov.audit_reconciled is True
+        assert cov.endpoints_summary == (("GET", "/api/v1/games", 80.0, "warning"),)
