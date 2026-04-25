@@ -70,6 +70,14 @@ class Reachability:
 
         rel_file = self._format_path(source_file, source_root)
         branches: list[ReachableBranch] = []
+        # Per H1 live-smoke audit reconciliation: coverage.py's
+        # `branch = true` does NOT classify `except` clauses as branch
+        # source-lines (verified on 7.13.5 against the real Hangman
+        # codebase: `Analysis.branch_stats()` returns only `if/elif/while/for`
+        # source-lines). Enumerating `ast.Try.handlers` as branches
+        # over-counts by 1 per except clause and breaks audit
+        # reconciliation. Reachability must mirror coverage.py's branch
+        # semantics for the audit invariant to hold.
         for node in ast.walk(func_def):
             if isinstance(node, ast.If | ast.While | ast.For):
                 line = node.lineno
@@ -84,20 +92,6 @@ class Reachability:
                         function_qualname=qualname,
                     )
                 )
-            elif isinstance(node, ast.Try):
-                # Each except clause is a branch arc.
-                for handler in node.handlers:
-                    line = handler.lineno
-                    branches.append(
-                        ReachableBranch(
-                            file=rel_file,
-                            line=line,
-                            branch_id=f"{line}->{line + 1}",
-                            condition_text=f"except {self._exception_type(handler)}",
-                            not_taken_to_line=line + 1,
-                            function_qualname=qualname,
-                        )
-                    )
         return branches
 
     @staticmethod
@@ -150,12 +144,3 @@ class Reachability:
             return ast.unparse(node).split("\n")[0].strip() or "(conditional arc)"
         except Exception:  # noqa: BLE001
             return "(conditional arc)"
-
-    @staticmethod
-    def _exception_type(handler: ast.ExceptHandler) -> str:
-        if handler.type is None:
-            return "Exception"
-        try:
-            return ast.unparse(handler.type)
-        except Exception:  # noqa: BLE001
-            return "Exception"

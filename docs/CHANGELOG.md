@@ -2,6 +2,21 @@
 
 All notable changes to Hangman will be documented in this file.
 
+## [unreleased] — 2026-04-24
+
+### Added
+
+- **Feature 3: BDD Branch Coverage** — `make bdd-coverage` generates
+  `tests/bdd/reports/coverage.{html,json}` from a coverage.py-instrumented
+  BDD run. Per-endpoint attribution via `CoverageContextMiddleware`
+  (switch_context per request). Static call-graph via pyan3 +
+  authoritative audit reconciliation against coverage.py's per-file
+  branch counts. 13-module Python package at `backend/tools/branch_coverage/`.
+  Feature 2's dashboard auto-augments when `coverage.json` is fresh —
+  new "Code coverage" card + per-endpoint uncovered-branch data
+  injected into the LLM's cached system prompt (new rubric criterion
+  D7). MIT `LICENSE` added (pyan3 is GPL v2+ dev-only).
+
 ## [unreleased] — 2026-04-24 (Feature 3 in progress)
 
 ### In progress: Feature 3 — BDD branch coverage

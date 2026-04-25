@@ -85,6 +85,34 @@ class TestBranchEnumeration:
         # Condition text is best-effort; accept any non-empty string.
         assert all(ct for ct in condition_texts)
 
+    def test_except_handlers_are_not_enumerated_as_branches(self, tmp_path: Path) -> None:
+        """Per H1 live-smoke audit reconciliation: coverage.py 7.13.5 with
+        `branch = true` does NOT classify `except` clauses as branch
+        source-lines (verified via `Analysis.branch_stats()` on the real
+        Hangman codebase). Reachability must mirror coverage.py's branch
+        semantics — enumerating `ast.Try.handlers` over-counts and breaks
+        the audit invariant.
+        """
+        from tools.branch_coverage.callgraph import CallGraph
+
+        # Build a minimal source tree with a single try/except function
+        # that has NO if/while/for branches — only an except clause.
+        pkg = tmp_path / "pkg"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("")
+        (pkg / "mod.py").write_text(
+            "def f(x):\n    try:\n        return int(x)\n    except ValueError:\n        return 0\n"
+        )
+
+        graph = CallGraph(adjacency={"pkg.mod.f": frozenset()})
+        ep = _endpoint("/x", "pkg.mod.f")
+        result = Reachability().compute((ep,), graph, tmp_path)
+        # Function has no if/while/for, only an except handler.
+        # Expected: 0 branches (except clauses are NOT branch source-lines).
+        assert result[ep] == [], (
+            f"except handlers must not be enumerated as branches; got {result[ep]}"
+        )
+
 
 class TestBoundaryEnforcement:
     def test_function_outside_source_root_is_excluded(
