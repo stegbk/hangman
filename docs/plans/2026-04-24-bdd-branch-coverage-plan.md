@@ -4227,7 +4227,7 @@ Eyeball the diff:
 git diff backend/tests/fixtures/dashboard/golden_render.html | head -40
 ```
 
-Expected: the diff shows ONE new card section with title "Code coverage", value "—", subtitle "Run \`make bdd-coverage\` to enable", tone "" (empty). Other cards unchanged. If unexpected diff appears (e.g., a real coverage % showing instead of "—"), re-check `_load_coverage_context_if_fresh` — it should return None when `coverage.json` doesn't exist.
+Expected: the diff shows ONE new card section with title "Code coverage", value "—", subtitle "Run \`make bdd-coverage\` to enable", tone "" (empty). Other cards unchanged. If unexpected diff appears (e.g., a real coverage % showing instead of "—"), re-check `load_coverage_context_if_fresh` — it should return None when `coverage.json` doesn't exist. (Per plan-review iter 13 P2: function name has no leading underscore — see G1 Step 2 module-level definition.)
 
 Run the golden test to confirm:
 
@@ -4262,9 +4262,15 @@ git commit -m "fix(dashboard): augment dashboard with coverage.json via new Cove
 
 - Modify: `backend/tools/dashboard/llm/client.py` (instance-level `_system` + `coverage_summary` param)
 - Modify: `backend/tools/dashboard/llm/rubric.py` (add D7 criterion)
-- Modify: `backend/tools/dashboard/analyzer.py` (build coverage_summary string, pass to LlmEvaluator)
+- Modify: `backend/tools/dashboard/__main__.py` (load coverage_context, pass to LlmEvaluator + Analyzer.run)
 - Modify: `backend/tests/unit/tools/dashboard/test_llm_client.py` (new injection test + instance attr)
 - Modify: `backend/tests/unit/tools/dashboard/test_rubric.py` (assert D7 present)
+
+Per plan-review iter 13 P2 (Codex): the file inventory previously listed
+`backend/tools/dashboard/analyzer.py` as a G2 modification, but G1 owns
+all `analyzer.py` changes (module-level helpers + `Analyzer.run()`
+signature extension). G2 only consumes those helpers from
+`__main__.py`. Inventory now correctly lists `__main__.py`.
 
 **Context:** Per design spec §6.3 + §6.4. This is the breaking change from §6.3 — `_SYSTEM` module constant becomes `self._system` instance attribute. Feature 2's existing cache-hit-behavior tests may need light updates.
 
@@ -4528,7 +4534,7 @@ Expected: clean.
 - [ ] **Step 8: Commit**
 
 ```bash
-git add backend/tools/dashboard/llm/client.py backend/tools/dashboard/llm/rubric.py backend/tools/dashboard/analyzer.py backend/tests/unit/tools/dashboard/test_llm_client.py backend/tests/unit/tools/dashboard/test_rubric.py
+git add backend/tools/dashboard/llm/client.py backend/tools/dashboard/llm/rubric.py backend/tools/dashboard/__main__.py backend/tests/unit/tools/dashboard/test_llm_client.py backend/tests/unit/tools/dashboard/test_rubric.py
 git commit -m "fix(dashboard): inject coverage summary into cached LLM system prompt + add D7 rubric criterion"
 ```
 
@@ -4897,7 +4903,7 @@ Per `/new-feature` Phase 4.0. One row per task; concrete file paths.
 | E3   | B1, E1, E2                         | `backend/tools/branch_coverage/renderer.py`, `backend/tools/branch_coverage/templates/base.html.j2`, `backend/tools/branch_coverage/templates/_endpoint_card.html.j2`, `backend/tools/branch_coverage/templates/_function_drilldown.html.j2`, `backend/tests/unit/tools/branch_coverage/test_renderer.py`, `backend/tests/fixtures/branch_coverage/golden_coverage.html` |
 | F1   | C1, C2, C3, D1, D2, D3, E1, E2, E3 | `backend/tools/branch_coverage/analyzer.py`, `backend/tools/branch_coverage/__main__.py`, `backend/tests/unit/tools/branch_coverage/test_analyzer.py`                                                                                                                                                                                                                    |
 | G1   | F1                                 | `backend/tools/dashboard/models.py` (M), `backend/tools/dashboard/analyzer.py` (M), `backend/tools/dashboard/renderer.py` (M), `backend/tests/unit/tools/dashboard/test_analyzer.py` (M), `backend/tests/unit/tools/dashboard/test_renderer.py` (M), `backend/tests/fixtures/dashboard/golden_render.html` (M)                                                           |
-| G2   | G1                                 | `backend/tools/dashboard/llm/client.py` (M), `backend/tools/dashboard/llm/rubric.py` (M), `backend/tools/dashboard/analyzer.py` (M — second touch), `backend/tests/unit/tools/dashboard/test_llm_client.py` (M), `backend/tests/unit/tools/dashboard/test_rubric.py` (M)                                                                                                 |
+| G2   | G1                                 | `backend/tools/dashboard/llm/client.py` (M), `backend/tools/dashboard/llm/rubric.py` (M), `backend/tools/dashboard/__main__.py` (M), `backend/tests/unit/tools/dashboard/test_llm_client.py` (M), `backend/tests/unit/tools/dashboard/test_rubric.py` (M)                                                                                                                |
 | H1   | G2                                 | `README.md` (M), `docs/CHANGELOG.md` (M)                                                                                                                                                                                                                                                                                                                                 |
 
 **Scheduling notes:**
@@ -4906,7 +4912,7 @@ Per `/new-feature` Phase 4.0. One row per task; concrete file paths.
 - A3 (spike) is the gate before all parallel work — it locks the pyan3 + coverage.py API contracts that C2 and D3 depend on.
 - After B1 lands: **C1, D1, D3, E1** are ready in parallel (all depend only on B1, file-disjoint). C1 blocks C2 (C2 needs conftest.py from C1); C2 blocks C3 (cycles + boundary tests use CallGraph).
 - F1 blocks on everything in Phases C/D/E.
-- G1 and G2 touch Feature 2 files — **G2 depends on G1** because both modify `analyzer.py`.
+- G1 and G2 both touch Feature 2 files — **G2 depends on G1** because G2's `__main__.py` imports the module-level helpers (`load_coverage_context_if_fresh`, `build_coverage_summary`) that G1 defines in `analyzer.py` and consumes the extended `Analyzer.run(coverage_context=…)` signature G1 introduces. Per plan-review iter 13 P2: G2 itself does NOT modify `analyzer.py`; G1 owns all `analyzer.py` changes.
 - H1 is the live smoke — depends on G2.
 
 **Recommended dispatch waves** (after A1 → A2 → A3 → B1 serial scaffold):
@@ -4916,7 +4922,7 @@ Per `/new-feature` Phase 4.0. One row per task; concrete file paths.
 3. **Parallel wave 3** (3 subagents): C3 (after C2), E2 (after E1), E3 (after E1 + E2 fixture files).
 4. F1 (serial).
 5. G1 (serial).
-6. G2 (serial — depends on G1's analyzer.py touches).
+6. G2 (serial — depends on G1's `analyzer.py` module-level helpers + extended `Analyzer.run` signature; G2 itself touches `__main__.py`/`client.py`/`rubric.py`).
 7. H1 (serial — depends on everything).
 
 Expected dispatch time: ~17-22 subagent invocations (1 per task × 17 tasks, plus 2-3 retries for cache/formatter quirks).
