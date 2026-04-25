@@ -27,6 +27,8 @@ All resolved during PRD discussion + research + brainstorming:
 
 - **Static call-graph tool:** `pyan3` v2.5+. `pycg` archived 2023-11, off the table.
 - **Dynamic coverage:** `coverage.py >= 7.13, < 7.14` (pinned directly; don't rely on pytest-cov's transitive bound). `--branch` mode, `--parallel-mode` for subprocess workers, `sigterm=true` config for clean SIGTERM flushes.
+- **Per-endpoint attribution:** ASGI middleware (`backend/tools/branch_coverage/middleware.py`) calls `coverage.Coverage.current().switch_context(f"{method} {route_template}")` on each request, resets on response. Every hit is attributed to its originating endpoint. Shared helpers reachable from multiple endpoints no longer over-credit endpoints whose scenarios never triggered them. Constraint: single uvicorn worker + sequential cucumber (both defaults; documented).
+- **App serving wrapper:** `backend/tools/branch_coverage/serve.py` imports `hangman.main.app`, adds the coverage middleware, runs uvicorn. Keeps product code unchanged; dev tooling owns its middleware.
 - **Route enumeration:** reflective `from hangman.main import app`; walk `app.routes`. AST-parsing `routes.py` rejected — reflective handles `prefix=` and `app.include_router(...)` for free.
 - **Output location:** `backend/tools/branch_coverage/` (sibling to `backend/tools/dashboard/` from Feature 2).
 - **Make target pattern:** two targets matching Feature 1's shape — `make backend-coverage` (Terminal 1, runs wrapped uvicorn) + `make bdd-coverage` (Terminal 3, runs cucumber + analyzer).
@@ -51,10 +53,12 @@ backend/
         ├── models.py                       @dataclass: Endpoint, ReachableBranch, FunctionCoverage,
                                                          CoveragePerEndpoint, AuditReport, CoverageReport
         ├── routes.py                       RouteEnumerator: reflective app.routes walker
-        ├── callgraph.py                    CallGraphBuilder: pyan3 subprocess wrapper + graph parser
+        ├── callgraph.py                    CallGraphBuilder: pyan3 Python API (CallGraphVisitor)
         ├── reachability.py                 Reachability: BFS from each handler through graph
-        ├── coverage_data.py                CoverageDataLoader: coverage.py Python API reader
-        ├── grader.py                       Grader: merge + pct + thresholds + audit reconciliation
+        ├── coverage_data.py                CoverageDataLoader: per-context hit sets via coverage.py API
+        ├── grader.py                       Grader: per-endpoint context intersection + audit + thresholds
+        ├── middleware.py                   CoverageContextMiddleware: ASGI middleware, switch_context per request
+        ├── serve.py                        ASGI entrypoint: wraps hangman.main.app with middleware + runs uvicorn
         ├── json_emitter.py                 JsonEmitter: CoverageReport → coverage.json
         ├── renderer.py                     DashboardRenderer: Jinja2 → coverage.html
         └── templates/
@@ -126,7 +130,14 @@ Terminal 1 (foreground):
   └→ scripts/backend-coverage.sh
        ├ writes $$ to .backend-coverage.pid
        └ exec uv run coverage run --branch --parallel-mode --source=src/hangman \
-              -m uvicorn hangman.main:app --host 127.0.0.1 --port $PORT
+              --rcfile=tools/branch_coverage/.coveragerc \
+              -m tools.branch_coverage.serve --host 127.0.0.1 --port $PORT
+              │
+              └─ serve.py imports hangman.main.app,
+                 wraps with CoverageContextMiddleware,
+                 runs uvicorn --workers 1.
+                 Per-request: switch_context(f"{method} {route_template}"),
+                              reset on response.
 
 Terminal 2 (foreground):
   make frontend                                       (unchanged from Feature 1)
@@ -436,19 +447,38 @@ class Reachability:
 
 ```python
 class CoverageDataLoader:
-    def load(self, coverage_file: Path) -> CoverageData:
-        """Use coverage.py's Python API (coverage.Coverage + CoverageData)
-        to read the .coverage file. Returns:
-          - hit_branches: frozenset[tuple[file, branch_id]]  # what ran
-          - total_branches_per_file: dict[file, int]         # authoritative
+    def load(self, coverage_file: Path) -> LoadedCoverage:
+        """Use coverage.py's Python API to read the .coverage file.
+        Returns PER-CONTEXT hit sets (one set per endpoint context
+        emitted by CoverageContextMiddleware) + authoritative per-file
+        totals.
         """
 ```
 
+`LoadedCoverage` dataclass:
+
+```python
+@dataclass(frozen=True)
+class LoadedCoverage:
+    # Per-context hit sets. Key = context label (e.g. "POST /games/{id}").
+    # Empty-string key ("") holds hits not tagged by the middleware
+    # (startup, shutdown, background tasks).
+    hits_by_context: dict[str, frozenset[tuple[str, str]]]
+
+    # Authoritative per-file branch counts (independent of contexts).
+    total_branches_per_file: dict[str, int]
+
+    # Aggregate hit set (union across all contexts) — used for
+    # extra_coverage detection + totals.
+    all_hits: frozenset[tuple[str, str]]
+```
+
 - Uses `coverage.Coverage(data_file=coverage_file)` + `.load()` + `.get_data()` → `CoverageData`.
-- `CoverageData.arcs(file)` returns the branch-arc tuples hit.
-- Authoritative total per file: `CoverageData.measured_files()` + per-file arc set via `coverage.Analyzer`.
-- Handles negative target lines (`[12, -12]` = function-exit arc) without crashing; these are filtered from the ReachableBranch enumeration (they aren't "branches" in the user-facing sense, they're exit arcs).
-- If the `.coverage` file is missing/corrupt, raise `CoverageDataLoadError` with a specific hint ("Run `make bdd-coverage` first; is `.backend-coverage.pid` stale?"). Caller (analyzer) surfaces to stderr.
+- `CoverageData.measured_contexts()` returns context labels (our middleware tags + `""` for untagged hits).
+- `CoverageData.arcs(file, contexts=[label])` — coverage.py 7.x supports the `contexts` filter argument on `arcs()` / `lines()` — returns hits for THIS context only. Caller iterates `measured_contexts()` and accumulates per context.
+- Authoritative total per file is context-independent: `CoverageData.measured_files()` + per-file arc set from the file's `.coverage.config.arcs()` or via `coverage.Analyzer`. Same as aggregate design.
+- Handles negative target lines (`[12, -12]` = function-exit arc) without crashing; filtered from the ReachableBranch enumeration since they aren't user-visible branches.
+- If the `.coverage` file is missing/corrupt, raise `CoverageDataLoadError` with a specific hint ("Run `make bdd-coverage` first; is `.backend-coverage.pid` stale?").
 
 ### 4.6 `grader.py` — `Grader`
 
@@ -457,30 +487,48 @@ class Grader:
     def grade(
         self,
         reachability: dict[Endpoint, list[ReachableBranch]],
-        hits: CoverageData,
+        hits: LoadedCoverage,
     ) -> CoverageReport:
-        """Merge reachability + hits. Compute per-endpoint pct + tone.
-        Build the audit block by cross-checking enumerated vs
-        coverage.py's authoritative per-file totals.
+        """Per-endpoint context intersection + audit reconciliation.
+
+        For each endpoint E:
+          covered_E = (branches reachable from E) ∩ (hits under E's context)
+        Shared helpers reachable from both E1 and E2 need each scenario's
+        context to individually trigger them; no cross-endpoint bleed.
         """
 ```
 
 Pipeline within Grader:
 
-1. Flatten `reachability` values → master set of enumerated branches (`{(file, line, branch_id): endpoints[]}`)
-2. Intersect with `hits.hit_branches` → covered branches per endpoint
-3. Compute `CoveragePerEndpoint` per endpoint (branch-weighted pct, tone via thresholds)
-4. Extract `ExtraCoverage`: files hit but no endpoint-reaching function contains that line
-5. Audit reconciliation:
-   - For each file in `backend/src/hangman/`:
-     - `a = hits.total_branches_per_file[file]` (authoritative)
-     - `b = count(enumerated branches in file)` (includes all endpoints + extra_coverage)
-     - Delta `a - b` = unattributed count for that file
-   - Enumerate the unattributed arcs from `hits` that aren't in our enumerated set
-   - Set `audit.reconciled = all(deltas are accounted for)`
-6. Compute `totals`: uses coverage.py's authoritative total (not our enumeration); covered = coverage.py's total hits in `backend/src/hangman/`
+1. **Per-endpoint intersection** (the Option B correctness fix):
+   For each `(endpoint, reachable_branches)` in reachability:
+   - `context_label = f"{endpoint.method} {endpoint.path}"` — matches what the middleware emits
+   - `context_hits = hits.hits_by_context.get(context_label, frozenset())`
+   - `covered_this_endpoint = set(reachable_branches) ∩ context_hits`
+   - Compute `CoveragePerEndpoint` with `covered_branches = len(covered_this_endpoint)`, `total_branches = len(reachable_branches)`, pct + tone via thresholds.
+
+2. **Per-function rollup** within each `CoveragePerEndpoint`:
+   For each `FunctionCoverage` in `reachable_functions`, filter `covered_this_endpoint` to the function's branches. `reached = bool(covered_this_endpoint ∩ function's branches)` or any hit on one of the function's lines (can also use `hits.all_hits` to flag "function was reached by SOME endpoint" distinctly from "function was reached by THIS endpoint").
+
+3. **Extra coverage** (functions hit by the BDD suite but not linked to any endpoint by static analysis):
+   - Compare `hits.all_hits` (aggregate across contexts) against the union of all endpoint reachability sets
+   - Hits in `all_hits` but not in any endpoint's reachable set → `ExtraCoverage` entries (file + qualname + reason)
+
+4. **Audit reconciliation** (see §3.3 for invariant):
+   - Enumerated (deduped across endpoints): `distinct((file, branch_id) for each branch in any endpoint's reachable set) ∪ distinct(extra_coverage branches)`
+   - Per file: `authoritative = hits.total_branches_per_file[file]`; `enumerated_count = len(deduped enumerated branches in file)`
+   - Delta = authoritative − enumerated_count → populate `unattributed_branches`
+   - `audit.reconciled = all(per-file deltas are fully accounted for by unattributed_branches)`
+
+5. **Totals** (headline number):
+   - `totals.total_branches = sum(hits.total_branches_per_file)` — authoritative
+   - `totals.covered_branches = |hits.all_hits ∩ all branches in backend/src/hangman/|` — aggregate coverage across all endpoints
+   - `totals.pct` and `tone` via thresholds
+   - Unattributed branches count as UNCOVERED in totals (penalty for completeness — never silently over-reports)
 
 Thresholds hardcoded as `_RED_THRESHOLD = 50.0`, `_YELLOW_THRESHOLD = 80.0` module constants.
+
+**Shared-helper test mandate** (surfaces in plan): `test_grader.py` MUST include a fixture where a helper function is reachable from 2 endpoints, and scenarios hit only 1 endpoint's context. Assert: endpoint 1 shows the helper's branches as covered; endpoint 2 shows them as uncovered; audit reconciliation dedupes and succeeds.
 
 ### 4.7 `json_emitter.py` — `JsonEmitter`
 
@@ -537,7 +585,66 @@ class Analyzer:
 
 Dependency injection — lets `test_analyzer.py` swap components with test doubles.
 
-### 4.10 `__main__.py` — CLI
+### 4.10 `middleware.py` — `CoverageContextMiddleware`
+
+**Per-endpoint attribution mechanism.** ASGI-style FastAPI middleware that labels every coverage hit with the originating endpoint's `method + route_template`. Without this, shared helpers reachable from multiple endpoints would falsely credit endpoints whose scenarios never actually exercised them (the limitation that drove Option B in the design).
+
+```python
+from __future__ import annotations
+import coverage
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.types import ASGIApp
+
+
+class CoverageContextMiddleware(BaseHTTPMiddleware):
+    """Switches coverage.py's active context per request.
+
+    Uses `coverage.Coverage.current()` — the Coverage instance that the
+    enclosing `coverage run` subprocess created. If no Coverage is active
+    (e.g., middleware installed by mistake in a non-instrumented run),
+    this is a harmless no-op.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        super().__init__(app)
+
+    async def dispatch(self, request, call_next):
+        cov = coverage.Coverage.current()
+        context_label = self._resolve_context(request)
+        if cov is not None:
+            cov.switch_context(context_label)
+        try:
+            response = await call_next(request)
+        finally:
+            if cov is not None:
+                cov.switch_context("")  # reset to global/unlabeled context
+        return response
+
+    @staticmethod
+    def _resolve_context(request) -> str:
+        # Prefer the matched route's path template ("/games/{id}") over
+        # the concrete request path ("/games/abc123"). Falls back to the
+        # concrete path if the router hasn't matched yet (404 / early
+        # middleware stage).
+        route = getattr(request.scope.get("route"), "path", None)
+        path = route or request.url.path
+        return f"{request.method} {path}"
+```
+
+Notes:
+
+- **Route-template resolution** attempts `request.scope["route"].path` first (matched route after FastAPI routing) — this correctly normalizes `/games/abc-123` and `/games/xyz-456` to the same `"/games/{id}"` context. On early-stage failures (pre-routing), falls back to `request.url.path`.
+- **`cov.switch_context("")` is reset** — passes through to the "" (empty-string) context, which is the default. Coverage not associated with a specific endpoint still lands somewhere accessible.
+- **Thread safety caveat:** coverage.py's `switch_context()` is process-global, not task-local. Single uvicorn worker + sequential cucumber is a hard constraint. Running with multiple workers or parallel scenarios would interleave contexts → unreliable attribution. See §12 risk #6.
+- **Non-instrumented runs:** if the middleware is somehow installed in a non-instrumented run, `coverage.Coverage.current()` returns None and both calls become no-ops. Safe to be present; still shouldn't be installed in production.
+
+### 4.11 `serve.py` — ASGI entrypoint wrapper
+
+Already specified in §7.2c. Minimal module: imports `hangman.main.app`, calls `app.add_middleware(CoverageContextMiddleware)`, exposes a `main()` with `argparse` + `uvicorn.run(..., workers=1)`. ~30 lines.
+
+Per-endpoint attribution flows: `coverage run -m tools.branch_coverage.serve` starts coverage AND the app; every request hits the middleware, which tags the context; `CoverageData` records hits per-context.
+
+### 4.12 `__main__.py` — CLI
 
 Argparse CLI with defaults anchored off `Path(__file__).resolve().parents[3]` (repo root):
 
@@ -651,6 +758,8 @@ No API key / env check (Feature 3 is local-only). Exit code 0 on success; 2 on C
 | `audit.reconciled`                             | If `false`, render a warning banner next to the Code coverage card                |
 
 All other fields are consumed only by `coverage.html` for drill-down rendering.
+
+**Semantic note (Option B per-endpoint contexts):** `endpoints[].pct` / `uncovered_branches_flat` reflect PER-ENDPOINT CONTEXT hits (via `CoverageContextMiddleware`), not aggregate hits. A branch reachable from endpoint E1 that was only triggered by scenarios hitting endpoint E2 will appear in E1's `uncovered_branches_flat`, because E1's context never fired on that hit. This is the correctness improvement over aggregate coverage — the dashboard now honestly reports "E1's scenarios didn't exercise this branch" even when some other endpoint's scenarios did. `extra_coverage` + `totals` use aggregate (union across all contexts) — those are suite-wide metrics.
 
 ---
 
@@ -831,13 +940,64 @@ bdd-coverage:  ## Run BDD suite with coverage instrumentation + generate reports
 set -e
 cd "$(dirname "$0")/.."
 echo "$$" > .backend-coverage.pid
-trap 'rm -f .backend-coverage.pid' EXIT
+trap 'rm -f .backend-coverage.pid' EXIT INT TERM
 cd backend
 exec uv run coverage run --branch --parallel-mode --source=src/hangman \
-  -m uvicorn hangman.main:app --host 127.0.0.1 --port "${HANGMAN_BACKEND_PORT:-8000}"
+  --rcfile=tools/branch_coverage/.coveragerc \
+  -m tools.branch_coverage.serve \
+  --host 127.0.0.1 --port "${HANGMAN_BACKEND_PORT:-8000}"
 ```
 
-`exec` chain: bash → uv → coverage → uvicorn. All same PID. SIGTERM on that PID hits uvicorn; coverage.py 7.13's `sigterm=true` handler flushes the data.
+`exec` chain: bash → uv → coverage → python → (tools.branch_coverage.serve runs uvicorn in-process). All same PID. SIGTERM on that PID hits the Python process; coverage.py 7.13's `sigterm=true` handler flushes the data.
+
+### 7.2b `backend/tools/branch_coverage/.coveragerc`
+
+```ini
+[run]
+branch = true
+parallel = true
+sigterm = true
+concurrency = thread
+source = src/hangman
+# No dynamic_context — we manage contexts ourselves via middleware.
+
+[report]
+show_missing = true
+```
+
+`concurrency = thread` ensures coverage.py's thread-local data model is active (uvicorn may dispatch sync handlers to a thread pool). Context switches remain process-global; documented constraint is single uvicorn worker + sequential cucumber (which are the defaults).
+
+### 7.2c `backend/tools/branch_coverage/serve.py`
+
+```python
+"""ASGI entrypoint that wraps hangman.main.app with the coverage middleware.
+
+Used by `coverage run -m tools.branch_coverage.serve` — ONLY for
+instrumented runs. Production runs continue to invoke `uvicorn
+hangman.main:app` directly (unchanged).
+"""
+from __future__ import annotations
+import argparse
+import uvicorn
+from hangman.main import app
+from tools.branch_coverage.middleware import CoverageContextMiddleware
+
+app.add_middleware(CoverageContextMiddleware)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", default=8000, type=int)
+    args = parser.parse_args()
+    uvicorn.run(app, host=args.host, port=args.port, workers=1, log_level="info")
+
+
+if __name__ == "__main__":
+    main()
+```
+
+`workers=1` is load-bearing: multi-worker uvicorn would fork, and coverage contexts are per-process — cross-worker request attribution would be lost. Instrumented runs are single-worker by construction.
 
 ### 7.3 `frontend/package.json`
 
@@ -973,6 +1133,10 @@ All resolved. 7 PRD open questions resolved via research + brainstorming; 5 plan
 4. **Audit reconciliation failure in practice.** If `reconciled: false` fires on the first live run, it's a real bug. `test_grader.py` must include an invariant test over fixture inputs. Manual smoke §8.3 verifies against the real Hangman codebase.
 
 5. **pyan3 GPL v2+ licensing.** Add repo `LICENSE` file during implementation (permissive — MIT or Apache-2.0). pyan3 stays in `[dependency-groups].dev`, never runtime. Documented in this spec.
+
+6. **Coverage context concurrency constraint.** `coverage.Coverage.switch_context()` is process-global — not task-local or thread-local. Concurrent requests to different endpoints would interleave context switches, corrupting per-endpoint attribution. **Hard constraint for instrumented runs:** single uvicorn worker (`workers=1` in `serve.py`) + sequential cucumber (already the default — `parallel: 0` in `cucumber.cjs`). Production runs are unaffected (they don't use `serve.py` or the middleware). Plan's live-smoke test must verify contexts attribute correctly under the constrained setup; if cucumber is ever reconfigured to parallel mode, a warning must fire from `make bdd-coverage`.
+
+7. **Route-template extraction edge case.** `CoverageContextMiddleware._resolve_context` prefers `request.scope["route"].path` (matched route template like `/games/{id}`). Pre-routing errors (middleware ordering issue, 404 before match) fall back to the concrete URL path. Plan must include test cases for both paths; middleware must never fail a request due to its own error (wrap in try/except, default to `""` context, log warning).
 
 ---
 
