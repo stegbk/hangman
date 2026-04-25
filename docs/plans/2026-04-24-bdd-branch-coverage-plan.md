@@ -1851,16 +1851,15 @@ class CoverageDataLoader:
         measured_files = data.measured_files()
         contexts = list(data.measured_contexts()) or [""]
 
-        # Per-context hit sets: dict[context_label, frozenset[(file, branch_id)]]
+        # Per-context hit sets: dict[context_label, frozenset[(file, branch_id)]].
+        # Per plan-review iter 5 P2 (Claude): removed pre-iter-4 dead local +
+        # stale `set_query_contexts`/aggregate-arcs comment block; the patched
+        # `_arcs_for_context` is now the single source of truth for per-context
+        # hit sets via `data.arcs(file, contexts=[label])`.
         hits_by_context: dict[str, frozenset[tuple[str, str]]] = {}
         for ctx in contexts:
             hits: set[tuple[str, str]] = set()
             for file in measured_files:
-                arcs = data.arcs(file) or []  # arcs is context-filtered if contexts param passed
-                # Note: coverage.py's public API returns aggregate arcs;
-                # for per-context arcs we use the internal-but-stable
-                # contexts_by_lineno/arcs mechanism if available, else
-                # treat ctx="" as all.
                 for arc in self._arcs_for_context(data, file, ctx):
                     hits.add((file, self._arc_to_id(arc)))
             hits_by_context[ctx] = frozenset(hits)
@@ -1954,7 +1953,7 @@ class CoverageDataLoader:
 Run: `cd backend && uv run pytest tests/unit/tools/branch_coverage/test_coverage_data.py -v`
 Expected: all pass.
 
-**If `test_exposes_per_context_hit_sets` fails** because coverage.py's public API for per-context arcs has shifted: inspect `data.measured_contexts()` output, read `coverage.CoverageData.arcs` signature (`cd backend && uv run python -c "import coverage; help(coverage.CoverageData.arcs)"`), and adjust `_arcs_for_context` accordingly. The public API is `set_query_contexts([label])` then `arcs(file)` per coverage 7.x docs.
+**If `test_exposes_per_context_hit_sets` fails** because coverage.py's public API for per-context arcs has shifted: inspect `data.measured_contexts()` output, read `coverage.CoverageData.arcs` signature (`cd backend && uv run python -c "import coverage; help(coverage.CoverageData.arcs)"`), and adjust `_arcs_for_context` accordingly. **The canonical public API is `data.arcs(file, contexts=[label])`** — the per-context kwarg form (per plan-review iter 4 patch (b) + design spec §4.5 line 478). Do NOT revert to `set_query_contexts([label])` + `arcs(file)`: that has the same effect but uses a global-state mutation that the iter-4 patch deliberately removed. If the kwarg API is truly broken on the installed coverage.py version, treat it as a coverage.py regression and pin to a known-good version (consult A3 spike Step 2 results for the version that was characterized as working). Last-resort fallback only: re-introduce `set_query_contexts` with a try/finally reset, AND open a tracking issue noting the coverage.py version + symptom.
 
 - [ ] **Step 5: ruff + mypy**
 
@@ -2000,6 +1999,17 @@ from tools.branch_coverage.models import (
 
 
 def _branch(file: str, line: int, func: str) -> ReachableBranch:
+    """Construct a fixture ReachableBranch.
+
+    Per plan-review iter 5 P1 (Codex): all `file` values in this test
+    module use the canonical runtime path format `src/hangman/<module>.py`
+    (matching what coverage.py with `relative_files = true` and
+    Reachability with absolute source_root both produce — see iter 4
+    patches (a) and `.coveragerc`). Tests that hand-construct paths
+    must use the same shape so they exercise the production
+    equivalence between the two sides; otherwise they hide path-
+    normalization bugs.
+    """
     return ReachableBranch(
         file=file,
         line=line,
@@ -2017,13 +2027,13 @@ def _ep(path: str, handler: str) -> Endpoint:
 class TestPerEndpointIntersection:
     def test_endpoint_with_all_branches_covered_is_green(self) -> None:
         ep = _ep("/a", "hangman.routes.handler_a")
-        branch1 = _branch("hangman/a.py", 10, "hangman.a.fn")
-        branch2 = _branch("hangman/a.py", 20, "hangman.a.fn")
+        branch1 = _branch("src/hangman/a.py", 10, "hangman.a.fn")
+        branch2 = _branch("src/hangman/a.py", 20, "hangman.a.fn")
         reachability = {ep: [branch1, branch2]}
         hits = LoadedCoverage(
-            hits_by_context={"POST /a": frozenset({("hangman/a.py", "10->11"), ("hangman/a.py", "20->21")})},
-            total_branches_per_file={"hangman/a.py": 2},
-            all_hits=frozenset({("hangman/a.py", "10->11"), ("hangman/a.py", "20->21")}),
+            hits_by_context={"POST /a": frozenset({("src/hangman/a.py", "10->11"), ("src/hangman/a.py", "20->21")})},
+            total_branches_per_file={"src/hangman/a.py": 2},
+            all_hits=frozenset({("src/hangman/a.py", "10->11"), ("src/hangman/a.py", "20->21")}),
         )
         report = Grader().grade(reachability, hits)
         ep_cov = report.endpoints[0]
@@ -2032,10 +2042,10 @@ class TestPerEndpointIntersection:
 
     def test_endpoint_with_no_branches_covered_is_red(self) -> None:
         ep = _ep("/b", "hangman.routes.handler_b")
-        reachability = {ep: [_branch("hangman/b.py", 10, "hangman.b.fn")]}
+        reachability = {ep: [_branch("src/hangman/b.py", 10, "hangman.b.fn")]}
         hits = LoadedCoverage(
             hits_by_context={"POST /b": frozenset()},
-            total_branches_per_file={"hangman/b.py": 1},
+            total_branches_per_file={"src/hangman/b.py": 1},
             all_hits=frozenset(),
         )
         report = Grader().grade(reachability, hits)
@@ -2071,14 +2081,14 @@ class TestPerEndpointIntersection:
         ep = _ep("/x", "hangman.routes.handler_x")
         total = 100
         covered_count = int(pct)  # 50.0 → 50 covered out of 100
-        branches = [_branch("hangman/x.py", i, "hangman.x.fn") for i in range(total)]
+        branches = [_branch("src/hangman/x.py", i, "hangman.x.fn") for i in range(total)]
         hit_set = frozenset(
-            ("hangman/x.py", f"{i}->{i+1}") for i in range(covered_count)
+            ("src/hangman/x.py", f"{i}->{i+1}") for i in range(covered_count)
         )
         reachability = {ep: branches}
         hits = LoadedCoverage(
             hits_by_context={"POST /x": hit_set},
-            total_branches_per_file={"hangman/x.py": total},
+            total_branches_per_file={"src/hangman/x.py": total},
             all_hits=hit_set,
         )
         report = Grader().grade(reachability, hits)
@@ -2093,16 +2103,16 @@ class TestSharedHelperCorrectness:
     def test_shared_helper_only_covered_under_one_context(self) -> None:
         ep_a = _ep("/a", "hangman.routes.handler_a")
         ep_b = _ep("/b", "hangman.routes.handler_b")
-        shared = _branch("hangman/shared.py", 10, "hangman.shared.helper")
+        shared = _branch("src/hangman/shared.py", 10, "hangman.shared.helper")
         reachability = {ep_a: [shared], ep_b: [shared]}
         # Only endpoint A's context fires on the hit.
         hits = LoadedCoverage(
             hits_by_context={
-                "POST /a": frozenset({("hangman/shared.py", "10->11")}),
+                "POST /a": frozenset({("src/hangman/shared.py", "10->11")}),
                 "POST /b": frozenset(),
             },
-            total_branches_per_file={"hangman/shared.py": 1},
-            all_hits=frozenset({("hangman/shared.py", "10->11")}),
+            total_branches_per_file={"src/hangman/shared.py": 1},
+            all_hits=frozenset({("src/hangman/shared.py", "10->11")}),
         )
         report = Grader().grade(reachability, hits)
         a = next(e for e in report.endpoints if e.endpoint.path == "/a")
@@ -2120,17 +2130,17 @@ class TestSharedHelperCorrectness:
         ep_a = _ep("/a", "hangman.routes.handler_a")
         ep_b = _ep("/b", "hangman.routes.handler_b")
         ep_c = _ep("/c", "hangman.routes.handler_c")
-        shared = _branch("hangman/shared.py", 10, "hangman.shared.helper")
+        shared = _branch("src/hangman/shared.py", 10, "hangman.shared.helper")
         reachability = {ep_a: [shared], ep_b: [shared], ep_c: [shared]}
         # Endpoints A and C trigger the shared branch; B does not.
         hits = LoadedCoverage(
             hits_by_context={
-                "POST /a": frozenset({("hangman/shared.py", "10->11")}),
+                "POST /a": frozenset({("src/hangman/shared.py", "10->11")}),
                 "POST /b": frozenset(),
-                "POST /c": frozenset({("hangman/shared.py", "10->11")}),
+                "POST /c": frozenset({("src/hangman/shared.py", "10->11")}),
             },
-            total_branches_per_file={"hangman/shared.py": 1},
-            all_hits=frozenset({("hangman/shared.py", "10->11")}),
+            total_branches_per_file={"src/hangman/shared.py": 1},
+            all_hits=frozenset({("src/hangman/shared.py", "10->11")}),
         )
         report = Grader().grade(reachability, hits)
         a = next(e for e in report.endpoints if e.endpoint.path == "/a")
@@ -2150,11 +2160,11 @@ class TestSharedHelperCorrectness:
 class TestAuditReconciliation:
     def test_reconciles_when_enumeration_matches(self) -> None:
         ep = _ep("/a", "hangman.routes.handler_a")
-        reachability = {ep: [_branch("hangman/a.py", 10, "hangman.a.fn")]}
+        reachability = {ep: [_branch("src/hangman/a.py", 10, "hangman.a.fn")]}
         hits = LoadedCoverage(
-            hits_by_context={"POST /a": frozenset({("hangman/a.py", "10->11")})},
-            total_branches_per_file={"hangman/a.py": 1},
-            all_hits=frozenset({("hangman/a.py", "10->11")}),
+            hits_by_context={"POST /a": frozenset({("src/hangman/a.py", "10->11")})},
+            total_branches_per_file={"src/hangman/a.py": 1},
+            all_hits=frozenset({("src/hangman/a.py", "10->11")}),
         )
         report = Grader().grade(reachability, hits)
         assert report.audit.reconciled is True
@@ -2168,14 +2178,14 @@ class TestAuditReconciliation:
         ep = _ep("/a", "hangman.routes.handler_a")
         reachability = {
             ep: [
-                _branch("hangman/a.py", 10, "hangman.a.fn"),
-                _branch("hangman/a.py", 20, "hangman.a.fn"),
-                _branch("hangman/a.py", 30, "hangman.a.fn"),
+                _branch("src/hangman/a.py", 10, "hangman.a.fn"),
+                _branch("src/hangman/a.py", 20, "hangman.a.fn"),
+                _branch("src/hangman/a.py", 30, "hangman.a.fn"),
             ]
         }
         hits = LoadedCoverage(
             hits_by_context={"POST /a": frozenset()},
-            total_branches_per_file={"hangman/a.py": 5},
+            total_branches_per_file={"src/hangman/a.py": 5},
             all_hits=frozenset(),
         )
         report = Grader().grade(reachability, hits)
@@ -2187,15 +2197,15 @@ class TestAuditReconciliation:
         # audit enumeration — not twice.
         ep_a = _ep("/a", "hangman.routes.handler_a")
         ep_b = _ep("/b", "hangman.routes.handler_b")
-        shared = _branch("hangman/shared.py", 10, "hangman.shared.fn")
+        shared = _branch("src/hangman/shared.py", 10, "hangman.shared.fn")
         reachability = {ep_a: [shared], ep_b: [shared]}
         hits = LoadedCoverage(
             hits_by_context={
-                "POST /a": frozenset({("hangman/shared.py", "10->11")}),
+                "POST /a": frozenset({("src/hangman/shared.py", "10->11")}),
                 "POST /b": frozenset(),
             },
-            total_branches_per_file={"hangman/shared.py": 1},
-            all_hits=frozenset({("hangman/shared.py", "10->11")}),
+            total_branches_per_file={"src/hangman/shared.py": 1},
+            all_hits=frozenset({("src/hangman/shared.py", "10->11")}),
         )
         report = Grader().grade(reachability, hits)
         # 1 authoritative = 1 enumerated (deduped) — reconciliation holds.
@@ -2209,16 +2219,16 @@ class TestAuditReconciliation:
         # `extra_count = 0`. This is the common shared-helper case where
         # pyan3 missed a callsite but coverage.py still saw the hit.
         ep = _ep("/a", "hangman.routes.handler_a")
-        reachability = {ep: [_branch("hangman/a.py", 10, "hangman.a.fn")]}
+        reachability = {ep: [_branch("src/hangman/a.py", 10, "hangman.a.fn")]}
         hits = LoadedCoverage(
             hits_by_context={"POST /a": frozenset({
-                ("hangman/a.py", "10->11"),
-                ("hangman/utils.py", "5->6"),  # hit via untagged context
+                ("src/hangman/a.py", "10->11"),
+                ("src/hangman/utils.py", "5->6"),  # hit via untagged context
             })},
-            total_branches_per_file={"hangman/a.py": 1, "hangman/utils.py": 1},
+            total_branches_per_file={"src/hangman/a.py": 1, "src/hangman/utils.py": 1},
             all_hits=frozenset({
-                ("hangman/a.py", "10->11"),
-                ("hangman/utils.py", "5->6"),
+                ("src/hangman/a.py", "10->11"),
+                ("src/hangman/utils.py", "5->6"),
             }),
         )
         report = Grader().grade(reachability, hits)
@@ -2232,11 +2242,11 @@ class TestAuditReconciliation:
 class TestTotals:
     def test_totals_use_authoritative_count(self) -> None:
         ep = _ep("/a", "hangman.routes.handler_a")
-        reachability = {ep: [_branch("hangman/a.py", 10, "hangman.a.fn")]}
+        reachability = {ep: [_branch("src/hangman/a.py", 10, "hangman.a.fn")]}
         hits = LoadedCoverage(
-            hits_by_context={"POST /a": frozenset({("hangman/a.py", "10->11")})},
-            total_branches_per_file={"hangman/a.py": 1},
-            all_hits=frozenset({("hangman/a.py", "10->11")}),
+            hits_by_context={"POST /a": frozenset({("src/hangman/a.py", "10->11")})},
+            total_branches_per_file={"src/hangman/a.py": 1},
+            all_hits=frozenset({("src/hangman/a.py", "10->11")}),
         )
         report = Grader().grade(reachability, hits)
         assert report.totals.total_branches == 1
@@ -2251,15 +2261,15 @@ class TestTotals:
         # using `len(hits.all_hits)` over-reports if any leakage gets through
         # coverage.py's source filter.
         ep = _ep("/a", "hangman.routes.handler_a")
-        reachability = {ep: [_branch("hangman/a.py", 10, "hangman.a.fn")]}
+        reachability = {ep: [_branch("src/hangman/a.py", 10, "hangman.a.fn")]}
         hits = LoadedCoverage(
             hits_by_context={"POST /a": frozenset({
-                ("hangman/a.py", "10->11"),  # in scope
+                ("src/hangman/a.py", "10->11"),  # in scope
                 ("third_party/lib.py", "5->6"),  # out of scope
             })},
-            total_branches_per_file={"hangman/a.py": 1},  # only in-scope file
+            total_branches_per_file={"src/hangman/a.py": 1},  # only in-scope file
             all_hits=frozenset({
-                ("hangman/a.py", "10->11"),
+                ("src/hangman/a.py", "10->11"),
                 ("third_party/lib.py", "5->6"),
             }),
         )
@@ -2574,10 +2584,20 @@ from tools.branch_coverage.models import (
 
 
 def _fixture_report() -> CoverageReport:
-    """Deterministic CoverageReport used for golden-file comparison."""
+    """Deterministic CoverageReport used for golden-file comparison.
+
+    Per plan-review iter 5 P2 (Claude): file paths use the canonical
+    runtime format `src/hangman/<module>.py` — matching what coverage.py
+    with `relative_files = true` produces and what Reachability emits
+    via `source_file.relative_to(source_root.parent.parent)`. The
+    `backend/` prefix is NEVER part of the canonical format and is
+    fail-fast rejected by H1 Step 7b. The golden_coverage.json baked
+    from this fixture is the worked example future maintainers will
+    copy when adding new endpoints — it must show the right shape.
+    """
     ep = Endpoint(method="POST", path="/api/v1/games", handler_qualname="hangman.routes.create_game")
     branch = ReachableBranch(
-        file="backend/src/hangman/game.py",
+        file="src/hangman/game.py",
         line=42,
         branch_id="42->45",
         condition_text="if category not in self._by_category:",
@@ -2585,7 +2605,7 @@ def _fixture_report() -> CoverageReport:
         function_qualname="hangman.game.new_game",
     )
     fc = FunctionCoverage(
-        file="backend/src/hangman/game.py",
+        file="src/hangman/game.py",
         qualname="hangman.game.new_game",
         total_branches=1,
         covered_branches=0,
@@ -4294,30 +4314,54 @@ Verify:
 
 Per plan-review iter 1 P1: D1's unit tests don't prove the middleware actually attributes hits per-endpoint correctly. This step is the load-bearing verification.
 
-**First, the path-format invariant** (per plan-review iter 4 P1, Claude). Reachability emits paths like `src/hangman/game.py`; coverage.py with `relative_files = true` + `cd backend` should match. If paths don't agree, every endpoint reports 0% / audit fails on every real run — fail fast here:
+**First, the path-format invariant** (per plan-review iter 4 P1 Claude + iter 5 P1 Codex). Reachability emits paths like `src/hangman/game.py`; coverage.py with `relative_files = true` + `cd backend` should match. If paths don't agree, every endpoint reports 0% / audit fails on every real run — fail fast here.
+
+**Iter 5 strengthening:** the previous version of this check only scanned `audit.unattributed_branches` and `endpoints[].uncovered_branches_flat`. Fully covered files never appear in either bucket, so a wrong path format in covered data could pass vacuously. The check below also scans `endpoints[].reachable_functions` (covered + uncovered) and `extra_coverage`, AND requires that `all_files` is non-empty (rejects vacuous PASS).
 
 ```bash
 cd backend && uv run python -c "
-import json
+import json, sys
 data = json.loads(open('../tests/bdd/reports/coverage.json').read())
-audit_files = {b['file'] for b in data['audit'].get('unattributed_branches', [])}
-endpoint_files = set()
-for ep in data['endpoints']:
+
+all_files = set()
+# 1. Every reachable function (covered AND uncovered) — guaranteed entries.
+for ep in data.get('endpoints', []):
+    for fn in ep.get('reachable_functions', []):
+        all_files.add(fn['file'])
+        for b in fn.get('uncovered_branches', []):
+            all_files.add(b['file'])
     for b in ep.get('uncovered_branches_flat', []):
-        endpoint_files.add(b['file'])
-all_files = audit_files | endpoint_files
+        all_files.add(b['file'])
+# 2. Extra coverage (files hit but not statically linked).
+for ec in data.get('extra_coverage', []):
+    all_files.add(ec['file'])
+# 3. Audit unattributed (authoritative branches not enumerated).
+for b in data['audit'].get('unattributed_branches', []):
+    all_files.add(b['file'])
+
 print(f'Files referenced in coverage.json: {len(all_files)}')
 for f in sorted(all_files)[:5]:
     print(f'  - {f}')
-bad = [f for f in all_files if f.startswith('/') or f.startswith('backend/')]
+
+# Vacuous-PASS guard: coverage.json must reference at least one file
+# from real BDD execution. Empty all_files means the analyzer ran
+# against an empty/broken .coverage and the rest of the smoke is
+# invalid.
+if not all_files:
+    print('❌ PATH-FORMAT VACUOUS: coverage.json has zero files referenced.')
+    print('   The .coverage data is empty or all branches were filtered out.')
+    print('   Re-run make bdd-coverage and inspect .backend-coverage.pid lifecycle.')
+    sys.exit(2)
+
+bad = [f for f in all_files if f.startswith('/') or f.startswith('backend/') or not f.startswith('src/hangman/')]
 if bad:
     print(f'❌ PATH-FORMAT MISMATCH: {len(bad)} files have wrong prefix:')
     for f in bad[:5]:
         print(f'    {f}')
     print('Expected format: src/hangman/<module>.py')
     print('Check .coveragerc has relative_files = true AND backend-coverage.sh does cd backend.')
-    exit(2)
-print('✓ Path-format invariant holds')
+    sys.exit(2)
+print(f'✓ Path-format invariant holds ({len(all_files)} files all match src/hangman/*)')
 "
 ```
 
