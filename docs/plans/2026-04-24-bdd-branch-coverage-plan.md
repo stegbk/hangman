@@ -4772,11 +4772,12 @@ If this fails, coverage attribution is silently broken across the entire run; th
 
 **Then the per-endpoint attribution correctness check.**
 
-Per plan-review iter 10 P1 (Codex): the previous version of this section claimed `apply_guess` is shared between `POST /games/{id}/guesses` and `POST /games/{id}/forfeit`, and that `/forfeit` had no BDD scenarios. **Both claims were wrong against the actual Hangman codebase:** there is no `/games/{id}/forfeit` route (forfeit logic is part of `POST /api/v1/games` — the create-game handler auto-forfeits any in-progress game; see `backend/src/hangman/routes.py:122`), `apply_guess` is only called from `POST /games/{game_id}/guesses` (lines 228 + 246), and `frontend/tests/bdd/features/forfeit.feature` exists with multiple scenarios. The check was unprovable — replaced with three real codebase facts:
+Per plan-review iter 10 P1 (Codex): the previous version of this section claimed `apply_guess` is shared between `POST /games/{id}/guesses` and `POST /games/{id}/forfeit`, and that `/forfeit` had no BDD scenarios. **Both claims were wrong against the actual Hangman codebase:** there is no `/games/{id}/forfeit` route (forfeit logic is part of `POST /api/v1/games` — the create-game handler auto-forfeits any in-progress game; see `backend/src/hangman/routes.py:122`), `apply_guess` is only called from `POST /games/{game_id}/guesses` (lines 228 + 246), and `frontend/tests/bdd/features/forfeit.feature` exists with multiple scenarios. The check was unprovable — replaced with two real codebase facts (an earlier iter-10 draft included a third check that was logically redundant — see iter-12 P2 note below):
 
 1. **Positive (line-level matching):** `POST /games/{game_id}/guesses` MUST reach `apply_guess` AND credit at least one of its branches (extensive guess scenarios in the BDD suite). Catches Grader regression to exact arc-id matching.
 2. **Negative (no over-attribution):** `GET /api/v1/categories` MUST NOT have `apply_guess` in its `reachable_functions`. It's a side-effect-free read endpoint with no path through guess logic. If `apply_guess` shows up there, either Reachability is over-following the call graph or the middleware is collapsing contexts.
-3. **Negative (per-context isolation):** `apply_guess`'s `covered_branches` count under `POST /games/{game_id}/guesses` MUST be greater than under `GET /api/v1/categories`. Same `apply_guess` function across two endpoints — different per-context hit sets means middleware is correctly isolating contexts.
+
+Per plan-review iter 12 P2 (Codex): an earlier draft included a third check ("apply_guess coverage under /guesses must be greater than under /categories") but it was logically redundant with check 2 — if check 2 holds, `apply_guess` is not in /categories' reachable_functions, so its `covered_branches` there is 0, and check 1 already asserts /guesses' is > 0. Removed.
 
 Run:
 
@@ -4838,10 +4839,6 @@ if categories is not None:
               'every context).')
         sys.exit(2)
     print('✓ Per-endpoint isolation: /categories does NOT reach apply_guess')
-
-# Check 3: NEGATIVE — apply_guess coverage MUST differ between endpoints.
-# This requires both endpoints to see apply_guess as reachable; if /categories
-# doesn't (per check 2), this check is satisfied trivially.
 "
 ```
 
