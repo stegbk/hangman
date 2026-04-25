@@ -28,6 +28,32 @@ Reset trade-off (D3 implementer + post-D1 follow-up, 2026-04-24):
     H1 live-smoke checks (positive `/guesses` credits apply_guess +
     negative `/categories` doesn't reach apply_guess) will catch any
     practical breakage from this trade-off.
+
+Phase 5 iter 4 follow-up (coverage.py 7.13.5 deeper limitations):
+    Codex iter-4 review flagged that the D3 fixture's docstring suggested
+    `Coverage(..., context="base")` was needed for multi-context recording.
+    Re-tested empirically:
+        - Coverage(context="base") + 3 switch_context calls (no resets) →
+          STILL drops middle labels AND each context returns all arcs (the
+          per-context filter stops partitioning under static context).
+        - Coverage() (no base) + 3 switch_context calls (no resets) →
+          drops middle labels with the lag-attribution bug, BUT correctly
+          partitions arcs per recorded label.
+        - Coverage() + N switch_context calls of the SAME label →
+          works correctly (no lag with same-label sequences).
+    The Hangman BDD suite's pattern (many requests per endpoint, same label
+    repeating) is the working case. Rapid endpoint-switching shows
+    lag-attribution. H1's positive-/guesses + negative-/categories checks
+    pass in practice because /categories doesn't call apply_guess
+    statically (so /categories is structurally correct regardless of
+    runtime attribution), and /guesses' many same-label requests anchor
+    the per-endpoint context recording.
+
+    Accepted limitation: rapid context-switching at the lag boundary may
+    show inaccurate per-endpoint attribution for endpoints invoked just
+    once or twice. Not blocking for the Hangman BDD suite. A future
+    upgrade to coverage.py >7.13.5 may resolve this; until then, the
+    pinned dep `coverage>=7.13,<7.14` keeps behavior stable.
 """
 
 from __future__ import annotations

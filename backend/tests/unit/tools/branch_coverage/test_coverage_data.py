@@ -21,12 +21,21 @@ def tiny_covered_data(tmp_path: Path) -> Path:
     target_file = tmp_path / "tiny.py"
     target_file.write_text("def double(x):\n    if x > 0:\n        return x * 2\n    return 0\n")
     data_file = tmp_path / ".coverage_fixture"
-    # Note: coverage.py 7.13.5 requires a base `context=` kwarg for
-    # `switch_context()` to record subsequent context switches reliably.
-    # Without it, only the first switched-to context gets persisted
-    # (a quirk verified by inspecting `data.measured_contexts()` on 7.13.5).
-    # The test assertion below uses substring matching ("ctx_a" in k)
-    # which already anticipated coverage.py prefixing context names.
+    # Per Phase 5 iter 4 follow-up: this fixture uses `context="base"`
+    # to make THIS specific fixture's pattern (exec_module + 2 calls
+    # under 2 contexts) record both labels reliably. The original D3
+    # implementer's note generalized this to "production needs
+    # context=base" — that generalization is WRONG. Re-tested
+    # empirically:
+    #   - Production middleware (no base context, no resets, many
+    #     repeated labels) → works because long same-label runs anchor
+    #     attribution.
+    #   - Static base context in production → makes recording WORSE
+    #     (per-context filter stops partitioning).
+    # The CoverageDataLoader is API-correct; this fixture's `context=
+    # "base"` is fixture-specific scaffolding, not a production
+    # contract. See middleware.py docstring "Phase 5 iter 4 follow-up".
+    # Substring assertions below already account for `base|` prefix.
     cov = coverage.Coverage(
         data_file=str(data_file),
         branch=True,
