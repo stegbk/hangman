@@ -92,26 +92,27 @@ Root:
 
 ---
 
-## Task inventory (16 tasks across 8 phases)
+## Task inventory (17 tasks across 8 phases)
 
-| Phase | ID  | Title                                                                |
-| ----- | --- | -------------------------------------------------------------------- |
-| A     | A1  | Add deps + LICENSE + .gitignore                                      |
-| A     | A2  | Scaffold package + Makefile + .coveragerc + backend-coverage.sh      |
-| B     | B1  | models.py dataclasses                                                |
-| C     | C1  | routes.py + test_routes.py + minimal_app fixture                     |
-| C     | C2  | callgraph.py + test_callgraph.py + fake_adjacency fixture            |
-| C     | C3  | reachability.py + test_reachability.py                               |
-| D     | D1  | middleware.py + test_middleware.py                                   |
-| D     | D2  | serve.py (ASGI entrypoint)                                           |
-| D     | D3  | coverage_data.py + test_coverage_data.py                             |
-| E     | E1  | grader.py + test_grader.py (shared-helper + audit reconciliation)    |
-| E     | E2  | json_emitter.py + test_json_emitter.py + golden_coverage.json        |
-| E     | E3  | renderer.py + templates/ + test_renderer.py + golden_coverage.html   |
-| F     | F1  | analyzer.py + **main**.py + test_analyzer.py                         |
-| G     | G1  | Feature 2 augmentation (models + analyzer staleness + renderer card) |
-| G     | G2  | Feature 2 LLM integration (client + rubric D7)                       |
-| H     | H1  | README + CHANGELOG + live integration smoke                          |
+| Phase | ID  | Title                                                                                  |
+| ----- | --- | -------------------------------------------------------------------------------------- |
+| A     | A1  | Add deps + LICENSE + .gitignore                                                        |
+| A     | A2  | Scaffold package + Makefile + .coveragerc + backend-coverage.sh                        |
+| A     | A3  | API spike — validate pyan3 + coverage.py public API + hangman.main import safety       |
+| B     | B1  | models.py dataclasses                                                                  |
+| C     | C1  | routes.py + test_routes.py + minimal_app fixture (with prefixed-router test)           |
+| C     | C2  | callgraph.py + test_callgraph.py + fake_adjacency fixture                              |
+| C     | C3  | reachability.py + test_reachability.py                                                 |
+| D     | D1  | middleware.py + test_middleware.py (mocked unit tests; real verify in H1)              |
+| D     | D2  | serve.py (ASGI entrypoint)                                                             |
+| D     | D3  | coverage_data.py + test_coverage_data.py (public API only; no private `_analyze`)      |
+| E     | E1  | grader.py + test_grader.py (N=2 and N=3 shared-helper + audit reconciliation)          |
+| E     | E2  | json_emitter.py + test_json_emitter.py + golden_coverage.json                          |
+| E     | E3  | renderer.py + templates/ + test_renderer.py + golden_coverage.html                     |
+| F     | F1  | analyzer.py + `__main__.py` + test_analyzer.py                                         |
+| G     | G1  | Feature 2 augmentation with explicit call-site checklist + golden regen step           |
+| G     | G2  | Feature 2 LLM integration (client + rubric D7 + test_rubric 13→14 criteria update)     |
+| H     | H1  | README + CHANGELOG + live smoke (real per-endpoint attribution + audit reconciliation) |
 
 ---
 
@@ -307,6 +308,146 @@ Expected: prints the path to `__init__.py` under the branch_coverage package.
 git add backend/tools/branch_coverage backend/tests/unit/tools/branch_coverage backend/tests/fixtures/branch_coverage scripts/backend-coverage.sh Makefile
 git commit -m "feat(branch-coverage): scaffold tools/branch_coverage package + Makefile targets + backend-coverage.sh"
 ```
+
+---
+
+### Task A3: API spike — validate pyan3 + coverage.py + hangman.main import safety
+
+**Files:**
+
+- Create: `backend/tools/branch_coverage/spike_results.md` (deleted at end of task; not committed)
+- May create / modify (only if needed to make import safe): `backend/src/hangman/db.py`
+
+**Context:** Plan-review iter 1 (Codex + Claude) flagged three speculative dependencies in the design that need real-environment validation BEFORE downstream tasks build on them:
+
+1. **pyan3 2.5.0 Python API** — research brief says `CallGraphVisitor` exposes `uses_graph`; design's `_node_name` has a fallback chain. Real attribute names need verification.
+2. **coverage.py 7.13 public API** — design's `CoverageDataLoader` uses `data.set_query_contexts([ctx])` + `data.arcs(file)` + originally `cov._analyze(file)` (private). Need to confirm public alternatives.
+3. **`from hangman.main import app` import safety** — `backend/src/hangman/main.py` imports `hangman.db.engine`, which `create_engine()`s at module scope. Side effects must be characterized: does it just create an engine object (lazy connect, harmless) or does it actually connect / migrate?
+
+This task is a **time-boxed spike**: verify each assumption with a real interpreter, write findings to a temporary `spike_results.md`, and either lock the design or propose a single-task amendment. After committing the verdict (in code, not the .md), delete the spike file.
+
+- [ ] **Step 1: Verify pyan3 API**
+
+After A1 lands (which installed pyan3>=2.5,<3 in the dev group), run:
+
+```bash
+cd backend && uv run python -c "
+import pyan
+from pyan.analyzer import CallGraphVisitor
+print('pyan version:', getattr(pyan, '__version__', 'unknown'))
+v = CallGraphVisitor(['src/hangman/main.py'])
+print('uses_graph type:', type(getattr(v, 'uses_graph', None)).__name__)
+print('uses_graph keys (first 3):', list(v.uses_graph.keys())[:3] if hasattr(v, 'uses_graph') else 'N/A')
+if hasattr(v, 'uses_graph') and v.uses_graph:
+    first_node = next(iter(v.uses_graph.keys()))
+    print('Node attrs:', [a for a in dir(first_node) if not a.startswith('_')][:20])
+    for attr in ('get_name', 'fullname', 'name'):
+        val = getattr(first_node, attr, None)
+        kind = 'method' if callable(val) else 'attr' if val is not None else 'missing'
+        print(f'  {attr}: {kind}, value={val!r if not callable(val) else val}')
+"
+```
+
+Expected: prints version, confirms `uses_graph` is a dict, prints node attrs. Capture findings in `spike_results.md`.
+
+**Decision criteria:**
+
+- If `uses_graph` exists AND nodes have at least one of `get_name() / fullname / name` returning a usable string → **lock the C2 design as-is, proceed.**
+- If `uses_graph` doesn't exist (pyan3 renamed it) → update C2's `callgraph.py` snippet with the actual attribute name, document in spike_results.md, then proceed.
+- If pyan3 fails to install or analyze → escalate; consider vendoring pyan3 source per design spec §12 risk #1.
+
+- [ ] **Step 2: Verify coverage.py 7.13 per-context arc API**
+
+```bash
+cd backend && uv run python -c "
+import coverage
+from coverage import Coverage, CoverageData
+print('coverage version:', coverage.__version__)
+d = CoverageData()
+print('CoverageData methods (relevant):')
+for m in ('set_query_contexts', 'arcs', 'lines', 'measured_files', 'measured_contexts'):
+    print(f'  {m}: {hasattr(d, m)}')
+print('Coverage class methods (relevant):')
+for m in ('current', '_analyze', 'analysis2'):
+    print(f'  {m}: {hasattr(Coverage, m)}')
+"
+```
+
+Expected: confirms `set_query_contexts` and `arcs` are present on `CoverageData`. If `_analyze` exists on `Coverage` it's the documented private path; if `analysis2` exists, that's the documented public alternative.
+
+**Decision criteria:**
+
+- If `set_query_contexts` + `arcs` are public → keep D3 design.
+- If `set_query_contexts` is missing → switch D3 to per-context iteration via `data.contexts_by_lineno()` (documented public surface).
+- For authoritative branch totals: prefer `coverage.Coverage().analysis2(file)` (public, returns `(filename, executable, excluded, missing, missing_formatted)`) over `_analyze`. Update D3 design accordingly. **No lossy fallback — if the API isn't found, hard-fail with a specific error.**
+
+- [ ] **Step 3: Audit `from hangman.main import app` for import-time side effects**
+
+```bash
+cd backend && uv run python -c "
+import os, sys
+print('CWD:', os.getcwd())
+print('Importing hangman.main...')
+# Track filesystem touches and DB connection attempts.
+import hangman.main
+print('Imported. app type:', type(hangman.main.app).__name__)
+print('app.routes count:', len(hangman.main.app.routes))
+" 2>&1 | tee /tmp/spike-import.log
+
+# Check for side-effect artifacts:
+ls -la backend/*.db 2>/dev/null && echo 'WARN: .db file created on import' || echo 'OK: no .db file'
+```
+
+Expected paths:
+
+- **Best case:** Import succeeds, no .db file created (engine is created but doesn't connect).
+- **Acceptable:** Import succeeds, an empty .db file is created (SQLAlchemy lazy connect with file-backed SQLite). Document this in the spike — Feature 3's analyzer can tolerate it (uses a separate test/run process).
+- **Bad case:** Import raises (DB unreachable), or import runs migrations (slow + irreversible). MUST fix.
+
+**Decision criteria:**
+
+- If best case → no code changes; proceed to B1.
+- If acceptable → document in `spike_results.md` + add a note to F1 task that a `.db` file may appear during analyzer runs (gitignored already).
+- If bad case → **PATCH `backend/src/hangman/db.py`** to make engine creation lazy (e.g., guard with `os.environ.get("HANGMAN_SKIP_DB_INIT")`) OR introduce an app factory `create_app()` that Feature 3's `RouteEnumerator` can call without DB init. Plan this as a sub-step here; commit with `fix(hangman): lazify db.py engine creation for tooling import safety`.
+
+- [ ] **Step 4: Document spike findings**
+
+Write `backend/tools/branch_coverage/spike_results.md` with:
+
+- pyan3 actual attribute names + version
+- coverage.py per-context API decision (set_query_contexts / contexts_by_lineno) + authoritative-branch API decision (analysis2 vs \_analyze)
+- hangman.main import side effect (best/acceptable/bad case + any patches applied)
+- Any plan amendments needed (e.g., "C2's `_node_name` fallback can be simplified — only `get_name()` is needed").
+
+This file is the spike artifact. Do NOT commit it long-term — it's reference material for the immediate plan iteration.
+
+- [ ] **Step 5: Apply spike-driven plan patches (if any)**
+
+If the spike revealed deltas from the plan's design, edit:
+
+- `docs/plans/2026-04-24-bdd-branch-coverage-plan.md` — update C2/D3 task code blocks
+- `docs/plans/2026-04-24-bdd-branch-coverage-design.md` — update §4.3/§4.5
+
+Commit those plan/design updates separately before B1 starts.
+
+- [ ] **Step 6: Clean up + commit**
+
+```bash
+# If db.py was patched in step 3:
+git add backend/src/hangman/db.py
+git commit -m "fix(hangman): lazify db.py engine creation for tooling import safety"
+
+# Delete the temporary spike file (not committed):
+rm backend/tools/branch_coverage/spike_results.md
+
+# Plan/design updates (if any) committed under their own message:
+git add docs/plans/2026-04-24-bdd-branch-coverage-plan.md docs/plans/2026-04-24-bdd-branch-coverage-design.md
+git commit -m "docs(branch-coverage): apply A3 spike findings to plan + design"
+```
+
+If the spike found nothing surprising (best case across all three checks): commit nothing, just delete `spike_results.md` and move on.
+
+**Time-box:** 30 minutes. If a check fails harder than expected (e.g., pyan3 can't analyze the codebase, coverage.py 7.13 reorganized the data API), escalate to the user before making structural plan changes.
 
 ---
 
@@ -598,6 +739,57 @@ class TestFiltersNonApiRoutes:
         # No routes added
         endpoints = RouteEnumerator().enumerate(bare_app)
         assert endpoints == ()
+
+
+class TestNestedRouterPrefix:
+    """Per plan-review iter 1 P2: real hangman code uses
+    `app.include_router(prefix="/api/v1", ...)`. The minimal_app fixture
+    already exercises a prefixed APIRouter at the top level; this test
+    adds a second router to verify that multiple prefixed routers stack
+    correctly."""
+
+    def test_multiple_prefixed_routers(self) -> None:
+        from fastapi import APIRouter, FastAPI
+
+        app = FastAPI()
+        v1 = APIRouter(prefix="/api/v1")
+        v2 = APIRouter(prefix="/api/v2")
+
+        @v1.get("/items")
+        def list_v1() -> dict:
+            return {"v": 1}
+
+        @v2.get("/items")
+        def list_v2() -> dict:
+            return {"v": 2}
+
+        app.include_router(v1)
+        app.include_router(v2)
+
+        endpoints = RouteEnumerator().enumerate(app)
+        paths = [e.path for e in endpoints]
+        assert "/api/v1/items" in paths
+        assert "/api/v2/items" in paths
+
+    def test_double_nested_prefix(self) -> None:
+        """Router prefix nesting: outer prefix '/api/v1' + inner router with
+        prefix '/games' → resolved path is '/api/v1/games'."""
+        from fastapi import APIRouter, FastAPI
+
+        app = FastAPI()
+        outer = APIRouter(prefix="/api/v1")
+        inner = APIRouter(prefix="/games")
+
+        @inner.get("/{game_id}")
+        def get_game(game_id: str) -> dict:
+            return {"id": game_id}
+
+        outer.include_router(inner)
+        app.include_router(outer)
+
+        endpoints = RouteEnumerator().enumerate(app)
+        paths = [e.path for e in endpoints]
+        assert "/api/v1/games/{game_id}" in paths
 ```
 
 - [ ] **Step 4: Run tests — expect fail**
@@ -1370,6 +1562,11 @@ class CoverageContextMiddleware(BaseHTTPMiddleware):
 Run: `cd backend && uv run pytest tests/unit/tools/branch_coverage/test_middleware.py -v`
 Expected: all pass.
 
+**Test-coverage caveat (per plan-review iter 1 P1):** these unit tests use a _mocked_ `coverage.Coverage.current()` and verify that `switch_context` is _called_ with the right arguments — they do NOT verify that `coverage.py`'s internal context bookkeeping correctly attributes hit branches to the active context, and they do NOT verify thread-safety of the process-global `switch_context` under concurrent requests. Those guarantees come from:
+
+1. **The constraint** — instrumented runs are single-uvicorn-worker + sequential-cucumber by construction (see design spec §12 risk #6). FastAPI's `TestClient` is also synchronous (one request at a time on the test thread), which matches the constraint at unit-test time.
+2. **The H1 live smoke** — runs the real BDD suite under real `coverage run` instrumentation against a real backend, then verifies per-endpoint attribution by inspecting `coverage.json`. If a shared helper appears as covered under endpoint A's context AND uncovered under endpoint B's context (where B's scenarios don't exercise it), the middleware works as designed.
+
 **Note on `test_get_request_switches_context`:** TestClient may not populate `request.scope["route"]` before the middleware runs (routing happens AFTER the middleware dispatch). In that case the test would see `"GET /items/abc123"` instead of `"GET /items/{item_id}"`. If tests fail with this, **relax the test** (not the code) — accept either the template or the concrete path (the fallback behavior is documented). The real-run behavior via uvicorn is correct per the FastAPI routing model; TestClient is just an imperfect harness for this specific attribute.
 
 - [ ] **Step 5: ruff + mypy**
@@ -1663,24 +1860,38 @@ class CoverageDataLoader:
 
     @staticmethod
     def _authoritative_branches(cov, data, file: str) -> list[tuple[int, int]]:
-        """Use coverage's Analyzer to enumerate branch arcs that EXIST
-        in the file (independent of whether they were hit)."""
+        """Enumerate branch arcs that EXIST in the file (independent of
+        whether they were hit), using coverage.py's PUBLIC analysis2
+        API.
+
+        analysis2(file) returns a NamedTuple-like:
+          (filename, executable, excluded, missing, missing_formatted)
+        For branch coverage, we need the BRANCH arcs the file contains.
+        coverage.py 7.x exposes branch arcs via Analysis.branch_lines()
+        when --branch is set; this is part of the documented public
+        Analysis class returned by Coverage.analysis2() in 7.13.
+
+        If the public API shape changes, we hard-fail with a specific
+        error rather than silently returning lossy data — per plan-review
+        iter 1 P1.
+        """
         try:
-            analysis = cov._analyze(file)  # type: ignore[attr-defined]
-            arcs = analysis.branch_lines() if hasattr(analysis, "branch_lines") else []
-            # branch_lines returns the branch destinations per source line;
-            # convert to (from, to) arcs.
-            result: list[tuple[int, int]] = []
-            for src, dests in arcs.items() if hasattr(arcs, "items") else []:
-                for dest in dests:
-                    if dest > 0:  # skip exit arcs
-                        result.append((src, dest))
-            return result
-        except Exception:  # noqa: BLE001
-            # Fallback: use whatever hits we have as the total (lossy,
-            # but keeps the pipeline running).
-            data.set_query_contexts(None)
-            return [a for a in (data.arcs(file) or []) if a[1] > 0]
+            # analysis2 is the public method on Coverage 7.x.
+            analysis = cov.analysis2(file)
+            # Coverage 7.x: Analysis exposes `arc_possibilities()`
+            # (returns all arc tuples that could execute, including branch
+            # arcs). Use that as the authoritative set; filter exit arcs
+            # (negative target lines).
+            possible = analysis.arc_possibilities() if hasattr(analysis, "arc_possibilities") else []
+            return [a for a in possible if a[1] > 0]
+        except (AttributeError, TypeError) as exc:
+            raise CoverageDataLoadError(
+                f"Coverage.analysis2('{file}') is not available or returned "
+                f"an unexpected shape — coverage.py public API may have "
+                f"shifted: {exc}. The A3 spike should have caught this; "
+                f"re-run the spike or pin coverage.py to a known-good "
+                f"version."
+            ) from exc
 ```
 
 - [ ] **Step 4: Run tests — expect pass**
@@ -1845,6 +2056,40 @@ class TestSharedHelperCorrectness:
         assert b.pct == 0.0  # B's scenarios DID NOT — correctness fix
         assert a.tone == Tone.SUCCESS
         assert b.tone == Tone.ERROR
+
+    def test_shared_helper_across_three_endpoints(self) -> None:
+        """Per plan-review iter 1 P2: extend the shared-helper case to
+        N=3 endpoints. Audit dedup must count the shared branch ONCE
+        across any number of endpoints; per-endpoint pct must reflect
+        only that endpoint's context hits."""
+        ep_a = _ep("/a", "hangman.routes.handler_a")
+        ep_b = _ep("/b", "hangman.routes.handler_b")
+        ep_c = _ep("/c", "hangman.routes.handler_c")
+        shared = _branch("hangman/shared.py", 10, "hangman.shared.helper")
+        reachability = {ep_a: [shared], ep_b: [shared], ep_c: [shared]}
+        # Endpoints A and C trigger the shared branch; B does not.
+        hits = LoadedCoverage(
+            hits_by_context={
+                "POST /a": frozenset({("hangman/shared.py", "10->11")}),
+                "POST /b": frozenset(),
+                "POST /c": frozenset({("hangman/shared.py", "10->11")}),
+            },
+            total_branches_per_file={"hangman/shared.py": 1},
+            all_hits=frozenset({("hangman/shared.py", "10->11")}),
+        )
+        report = Grader().grade(reachability, hits)
+        a = next(e for e in report.endpoints if e.endpoint.path == "/a")
+        b = next(e for e in report.endpoints if e.endpoint.path == "/b")
+        c = next(e for e in report.endpoints if e.endpoint.path == "/c")
+        # A and C see the shared branch as covered.
+        assert a.pct == 100.0
+        assert c.pct == 100.0
+        # B does not — its scenarios never triggered the helper.
+        assert b.pct == 0.0
+        # Audit dedupes: 1 authoritative branch = 1 enumerated (not 3).
+        assert report.audit.total_branches_per_coverage_py == 1
+        assert report.audit.total_branches_enumerated_via_reachability == 1
+        assert report.audit.reconciled is True
 
 
 class TestAuditReconciliation:
@@ -3335,18 +3580,70 @@ class TestCoverageCard:
         assert "Run `make bdd-coverage`" in html or "make bdd-coverage" in html
 ```
 
-Also update the EXISTING test calls to `DashboardRenderer().render(...)` to pass `None` as the new `coverage_context` argument (for tests that don't exercise the new path).
+**Explicit call-site checklist** (per plan-review iter 1 P1: Feature 2 has 8 `DashboardRenderer().render(...)` call-sites; missing any one breaks the test suite):
 
-Search for `DashboardRenderer().render(ctx, findings, grades, history` in the test file. Each call needs `None` inserted before `summary` (i.e. between `summary` and `out`):
+Run this command to enumerate all call-sites:
+
+```bash
+grep -n "DashboardRenderer().render(" backend/tests/unit/tools/dashboard/test_renderer.py
+```
+
+Expected output: 8 lines (matching Feature 2's master branch as of commit `bf1b2df`). Each line needs `None` inserted between `summary` and `out`:
 
 ```python
-# BEFORE:
+# BEFORE
 DashboardRenderer().render(ctx, findings, grades, history, (), summary, out)
-# AFTER:
+# AFTER
 DashboardRenderer().render(ctx, findings, grades, history, (), summary, None, out)
 ```
 
-Also update the golden-file fixture if one exists — regenerate with `None` coverage_context, which produces the placeholder card. Then re-run golden test to verify it still passes. (Feature 2's existing golden should only grow the placeholder card addition.)
+Use a global find/replace if your editor supports it; otherwise update each line. Verify the count after editing:
+
+```bash
+grep -c "DashboardRenderer().render(ctx" backend/tests/unit/tools/dashboard/test_renderer.py
+# Expected: 8 (or 10 if TestCoverageCard's two new call-sites were added in Step 5)
+```
+
+If `coverage_context` isn't in the new positional position 7 (between `summary` and `out`), the existing tests fail with a `TypeError` mismatch. Run:
+
+```bash
+cd backend && uv run pytest tests/unit/tools/dashboard/test_renderer.py -v 2>&1 | head -30
+```
+
+to surface any remaining mismatches before the next step.
+
+**Golden file regeneration step** (per plan-review iter 1 P2: Feature 2's `golden_render.html` will change because the new "Code coverage" placeholder card lands in `_build_summary_cards`):
+
+```bash
+cd backend && uv run python -c "
+from pathlib import Path
+import sys
+sys.path.insert(0, 'tests/unit/tools/dashboard')
+from test_renderer import _deterministic_inputs
+from tools.dashboard.renderer import DashboardRenderer
+ctx, findings, grades, history, summary = _deterministic_inputs()
+out = Path('tests/fixtures/dashboard/golden_render.html')
+# coverage_context=None → placeholder card appears.
+DashboardRenderer().render(ctx, findings, grades, history, (), summary, None, out)
+print('Regenerated golden:', out.stat().st_size, 'bytes')
+"
+```
+
+Eyeball the diff:
+
+```bash
+git diff backend/tests/fixtures/dashboard/golden_render.html | head -40
+```
+
+Expected: the diff shows ONE new card section with title "Code coverage", value "—", subtitle "Run \`make bdd-coverage\` to enable", tone "" (empty). Other cards unchanged. If unexpected diff appears (e.g., a real coverage % showing instead of "—"), re-check `_load_coverage_context_if_fresh` — it should return None when `coverage.json` doesn't exist.
+
+Run the golden test to confirm:
+
+```bash
+cd backend && uv run pytest tests/unit/tools/dashboard/test_renderer.py::TestGoldenFile -v
+```
+
+Expected: PASS.
 
 - [ ] **Step 6: Run full backend test suite**
 
@@ -3572,9 +3869,23 @@ class TestCoverageSummaryInjection:
         assert "## Coverage context" not in system_text
 ```
 
-- [ ] **Step 5: Modify `test_rubric.py`** — add D7 assertion
+- [ ] **Step 5: Modify `test_rubric.py`** — replace `test_contains_all_13_criteria` with 14-criteria version (per plan-review iter 1 P1: the 13→14 update is the breaking change in Feature 2's existing tests; missing it surfaces only when D7 ships)
 
-Extend the existing `TestRubricStructure.test_contains_all_13_criteria` (now 14):
+The current `test_rubric.py` (Feature 2 master) has at line ~22:
+
+```python
+    def test_contains_all_13_criteria(self) -> None:
+        required = [f"D{i}" for i in range(1, 7)] + [f"H{i}" for i in range(1, 8)]
+        missing = [cid for cid in required if cid not in RUBRIC_TEXT]
+        assert missing == [], f"Rubric missing criteria: {missing}"
+```
+
+Two changes:
+
+1. **Rename** the function to `test_contains_all_14_criteria`
+2. **Update the range** from `range(1, 7)` (D1-D6) to `range(1, 8)` (D1-D7)
+
+Resulting code:
 
 ```python
     def test_contains_all_14_criteria(self) -> None:
@@ -3583,15 +3894,55 @@ Extend the existing `TestRubricStructure.test_contains_all_13_criteria` (now 14)
         assert missing == [], f"Rubric missing criteria: {missing}"
 ```
 
-Rename the old test function to match (`test_contains_all_14_criteria`). Delete the old `test_contains_all_13_criteria` if present.
+If you forget to update this test, the existing 13-criteria test KEEPS PASSING (because D7 is in the rubric, but D1-D6 + H1-H7 still cover the old required set). The bug only surfaces if a future criterion is added or D7 is removed. Update it for hygiene + intent clarity.
 
-Also add:
+Also add a new D7-specific test below the renamed one:
 
 ```python
     def test_mentions_d7_missed_coverage_opportunity(self) -> None:
         assert "D7" in RUBRIC_TEXT
         assert "Missed coverage opportunity" in RUBRIC_TEXT
 ```
+
+**LlmEvaluator call-site checklist** (per plan-review iter 1 P1: existing call-sites that construct `LlmEvaluator(...)` may need to pass `coverage_summary=""` explicitly OR rely on the default):
+
+Run:
+
+```bash
+grep -rn "LlmEvaluator(" backend/tests/unit/tools/dashboard/ backend/tools/dashboard/__main__.py
+```
+
+Expected: ~16 call-sites in `test_llm_client.py`, 1 in `test_analyzer.py`, 1 in `__main__.py`. Since `coverage_summary` has a default of `""` (per Step 1 of this task), **no existing call-site needs modification** — they all get the default empty string, the system prompt is RUBRIC_TEXT only, behavior unchanged.
+
+The ONLY exception: `__main__.py` (Feature 2's CLI) needs to pass the runtime-loaded `coverage_summary` explicitly:
+
+```python
+# backend/tools/dashboard/__main__.py — locate the LlmEvaluator construction (~line 80)
+# BEFORE:
+llm=LlmEvaluator(model=args.model, max_workers=args.max_workers),
+# AFTER:
+coverage_context = load_coverage_context_if_fresh(args.ndjson)
+coverage_summary = build_coverage_summary(coverage_context) if coverage_context else ""
+llm=LlmEvaluator(
+    model=args.model,
+    max_workers=args.max_workers,
+    coverage_summary=coverage_summary,
+),
+```
+
+Plus the corresponding imports at the top of `__main__.py`:
+
+```python
+from tools.dashboard.analyzer import build_coverage_summary, load_coverage_context_if_fresh
+```
+
+Verify after editing:
+
+```bash
+cd backend && uv run python -m tools.dashboard --help
+```
+
+Expected: argparse help renders without import errors.
 
 - [ ] **Step 6: Run Feature 2's full suite**
 
@@ -3791,6 +4142,64 @@ Verify:
 - Drill-down: click a card, see reachable functions, see uncovered branches
 - Audit section: `reconciled = true` — no red warning banner
 
+- [ ] **Step 7b: Verify per-endpoint attribution is real (Option B correctness check)**
+
+Per plan-review iter 1 P1: D1's unit tests don't prove the middleware actually attributes hits per-endpoint correctly. This step is the load-bearing verification.
+
+The Hangman codebase has a known shared helper: `hangman.game.apply_guess` is reachable from both `POST /api/v1/games/{id}/guesses` (every guess scenario) and `POST /api/v1/games/{id}/forfeit` (forfeit calls apply_guess to mark the game lost). The BDD suite has scenarios for `/guesses` but no scenarios for `/forfeit` (verify with `grep -r "forfeit" frontend/tests/bdd/features/`).
+
+Run:
+
+```bash
+cd backend && uv run python -c "
+import json
+data = json.loads(open('../tests/bdd/reports/coverage.json').read())
+
+# Find the two endpoints.
+guesses = next((e for e in data['endpoints']
+                if e['method'] == 'POST' and 'guesses' in e['path']), None)
+forfeit = next((e for e in data['endpoints']
+                if e['method'] == 'POST' and 'forfeit' in e['path']), None)
+
+print(f'POST /guesses: pct={guesses[\"pct\"]:.1f}%, tone={guesses[\"tone\"]}')
+if forfeit:
+    print(f'POST /forfeit: pct={forfeit[\"pct\"]:.1f}%, tone={forfeit[\"tone\"]}')
+
+    # Compare reachable functions.
+    g_funcs = {f['qualname'] for f in guesses['reachable_functions']}
+    f_funcs = {f['qualname'] for f in forfeit['reachable_functions']}
+    shared = g_funcs & f_funcs
+    print(f'Shared reachable functions: {len(shared)}')
+    print(f'  Examples: {list(shared)[:3]}')
+
+    # The correctness assertion: if /forfeit has scenarios that DON'T
+    # cover the shared apply_guess branches, /forfeit should show those
+    # branches as uncovered EVEN THOUGH /guesses' scenarios covered
+    # them under /guesses' context.
+    apply_guess_uncov_in_forfeit = [
+        b for b in forfeit['uncovered_branches_flat']
+        if 'apply_guess' in b.get('function_qualname', '')
+    ]
+    if apply_guess_uncov_in_forfeit:
+        print(f'✓ Per-endpoint attribution working: '
+              f'{len(apply_guess_uncov_in_forfeit)} apply_guess branches '
+              f'uncovered under /forfeit context')
+    else:
+        print('⚠ /forfeit shows apply_guess as fully covered — '
+              'either there are forfeit scenarios that do exercise '
+              'apply_guess, OR the middleware is over-attributing.')
+else:
+    print('⚠ /forfeit endpoint not found — Hangman may not have this route, '
+          'or RouteEnumerator did not pick it up. Verify against routes.py.')
+"
+```
+
+**Acceptance:**
+
+- If the shared-helper attribution warning fires (Option B works correctly): proceed.
+- If `/forfeit` shows 100% coverage on shared helpers despite having no scenarios: middleware is broken — investigate. Likely causes: `coverage.Coverage.current()` returns None at request time (middleware no-ops in production runs), `switch_context` argument format mismatch, or context names don't match what Grader expects.
+- If `/forfeit` doesn't exist as a route: pick another shared-helper case from the actual Hangman API surface; the principle holds.
+
 - [ ] **Step 8: Verify Feature 2 augmentation**
 
 Keep the backend + frontend running (or re-start them; just `make backend` this time, not backend-coverage). Run:
@@ -3826,7 +4235,8 @@ Per `/new-feature` Phase 4.0. One row per task; concrete file paths.
 | ---- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | A1   | —                                  | `backend/pyproject.toml`, `backend/uv.lock`, `LICENSE`, `.gitignore`                                                                                                                                                                                                                                                                                                     |
 | A2   | A1                                 | `backend/tools/branch_coverage/__init__.py`, `backend/tools/branch_coverage/templates/.gitkeep`, `backend/tools/branch_coverage/.coveragerc`, `backend/tests/unit/tools/branch_coverage/__init__.py`, `backend/tests/fixtures/branch_coverage/.gitkeep`, `scripts/backend-coverage.sh`, `Makefile`                                                                       |
-| B1   | A2                                 | `backend/tools/branch_coverage/models.py`                                                                                                                                                                                                                                                                                                                                |
+| A3   | A2                                 | (spike — temporary `backend/tools/branch_coverage/spike_results.md` deleted at task end; may patch `backend/src/hangman/db.py` if import-side-effect audit fails; may patch this plan + design spec)                                                                                                                                                                     |
+| B1   | A3                                 | `backend/tools/branch_coverage/models.py`                                                                                                                                                                                                                                                                                                                                |
 | C1   | B1                                 | `backend/tests/fixtures/branch_coverage/minimal_app/__init__.py`, `backend/tests/fixtures/branch_coverage/minimal_app/main.py`, `backend/tests/fixtures/branch_coverage/minimal_app/game.py`, `backend/tools/branch_coverage/routes.py`, `backend/tests/unit/tools/branch_coverage/conftest.py`, `backend/tests/unit/tools/branch_coverage/test_routes.py`               |
 | C2   | B1, C1                             | `backend/tests/fixtures/branch_coverage/fake_adjacency.py`, `backend/tools/branch_coverage/callgraph.py`, `backend/tests/unit/tools/branch_coverage/test_callgraph.py`                                                                                                                                                                                                   |
 | C3   | B1, C1, C2                         | `backend/tools/branch_coverage/reachability.py`, `backend/tests/unit/tools/branch_coverage/test_reachability.py`                                                                                                                                                                                                                                                         |
@@ -3843,16 +4253,14 @@ Per `/new-feature` Phase 4.0. One row per task; concrete file paths.
 
 **Scheduling notes:**
 
-- A1 → A2 → B1 serial (pure scaffold chain).
+- A1 → A2 → A3 → B1 serial (scaffold + spike chain).
+- A3 (spike) is the gate before all parallel work — it locks the pyan3 + coverage.py API contracts that C2 and D3 depend on.
 - After B1 lands: **C1, D1, D3, E1** are ready in parallel (all depend only on B1, file-disjoint). C1 blocks C2 (C2 needs conftest.py from C1); C2 blocks C3 (cycles + boundary tests use CallGraph).
-- **Wave 1** (3 parallel): C1, D1, D3.
-- **Wave 2** (3 parallel after C1 lands): C2, D2 (depends on D1 so may wait), E1.
-- **Wave 3** (1): C3 (after C2), then E2 (needs E1), then E3 (needs E1 + E2 fixtures, but file-disjoint after fixtures exist).
 - F1 blocks on everything in Phases C/D/E.
 - G1 and G2 touch Feature 2 files — **G2 depends on G1** because both modify `analyzer.py`.
 - H1 is the live smoke — depends on G2.
 
-**Recommended dispatch waves** (after A1 → A2 → B1 serial scaffold):
+**Recommended dispatch waves** (after A1 → A2 → A3 → B1 serial scaffold):
 
 1. **Parallel wave 1** (3 subagents): C1, D1, D3.
 2. **Parallel wave 2** (2-3 subagents): C2 (after C1), E1, D2 (after D1).
@@ -3862,7 +4270,7 @@ Per `/new-feature` Phase 4.0. One row per task; concrete file paths.
 6. G2 (serial — depends on G1's analyzer.py touches).
 7. H1 (serial — depends on everything).
 
-Expected dispatch time: ~15-20 subagent invocations (1 per task × ~16 tasks, plus 2-3 retries for cache/formatter quirks).
+Expected dispatch time: ~17-22 subagent invocations (1 per task × 17 tasks, plus 2-3 retries for cache/formatter quirks).
 
 ---
 
