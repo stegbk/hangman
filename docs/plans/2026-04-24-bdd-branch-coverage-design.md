@@ -921,13 +921,15 @@ No LLM in Feature 3. Feature 2's LLM is the non-deterministic surface (and its o
 
 ## 11. Open questions
 
-None blocking. All 7 PRD open questions resolved. Remaining plan-phase details:
+All resolved. 7 PRD open questions resolved via research + brainstorming; 5 plan-phase details resolved in Section 13.
 
-- [ ] `pnpm bdd:coverage` script in `frontend/package.json` vs `--format` flag in Make recipe — cosmetic; plan decides.
-- [ ] Exact shape of `scripts/backend-coverage.sh` PID handling (cleanup on SIGHUP, SIGINT, etc.) — robustness details; plan decides.
-- [ ] Whether to add a repo-level `LICENSE` file (pyan3 is GPL v2+ in dev deps) — plan-phase decision; recommended MIT or Apache-2.0.
-- [ ] `ast.parse`-based `condition_text` extraction edge cases (multi-line `if`, pattern-match guards, ternaries) — plan should include targeted unit test cases.
-- [ ] Ordering of summary cards in Feature 2's dashboard (where does the new "Code coverage" card sit relative to the existing 7 cards?) — UX detail.
+## 11.1 Plan-phase decisions (resolved at design close-out)
+
+- **Cucumber `--format` location:** **Make recipe passes `--format` inline.** No new `bdd:coverage` script in `frontend/package.json`. One place to find the NDJSON filename (the Make recipe in `backend-coverage` / `bdd-coverage`).
+- **`scripts/backend-coverage.sh` PID cleanup:** `trap 'rm -f .backend-coverage.pid' EXIT INT TERM` inside the script. `make bdd-coverage` does `kill -0 $PID` before `kill -TERM` (check-alive); warns (does not error) on stale PID; always `rm -f` the file after. README documents "if you `kill -9` the backend process, `rm .backend-coverage.pid` manually before next run."
+- **Repo `LICENSE` file:** **Add MIT LICENSE** as part of Feature 3's implementation plan. Permissive; matches Python dev-tooling ecosystem; no obligation propagation from pyan3 (which stays in `[dependency-groups].dev` only, never runtime).
+- **`condition_text` extraction edge cases:** Plan-phase unit tests in `test_reachability.py` cover: multi-line conditions, pattern-match guards, ternary expressions, `try/except` arcs (use exception type or `"(conditional arc)"` as fallback). Degraded extraction never raises — returns a placeholder string instead.
+- **Feature 2 summary-card ordering:** new "Code coverage" card placed **immediately after the existing tag-based "Endpoint coverage" card**. Lets the viewer compare tag-based (what scenarios claim) vs code-path-based (what's actually tested) side-by-side.
 
 ---
 
