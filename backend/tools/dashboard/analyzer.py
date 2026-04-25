@@ -78,8 +78,14 @@ def _build_coverage_context(data: dict[str, Any]) -> CoverageContext | None:
     older-schema coverage.json artifacts.
     """
     try:
+        # Per Phase 5 iter 2 P1 (Codex): coerce endpoint scalar types
+        # (`float(ep["pct"])`) so a coverage.json with `pct: "80"` (string)
+        # doesn't pass through here only to crash later in
+        # `build_coverage_summary` at `f"{pct:.0f}"`. ValueError on type
+        # mismatch is caught by the except below.
         endpoints_summary = tuple(
-            (ep["method"], ep["path"], ep["pct"], ep["tone"]) for ep in data.get("endpoints", [])
+            (str(ep["method"]), str(ep["path"]), float(ep["pct"]), str(ep["tone"]))
+            for ep in data.get("endpoints", [])
         )
         endpoints_uncovered_flat: dict[str, tuple[dict[str, Any], ...]] = {
             f"{ep['method']} {ep['path']}": tuple(ep.get("uncovered_branches_flat", []))
@@ -87,18 +93,24 @@ def _build_coverage_context(data: dict[str, Any]) -> CoverageContext | None:
         }
         totals = data.get("totals", {})
         audit = data.get("audit", {})
+        # Per Phase 5 iter 2 P1 (Codex): coerce scalar types so that a
+        # coverage.json with `pct: "75"` (string) doesn't pass through here
+        # only to crash later in `build_coverage_summary` at
+        # `f"{ctx.totals_pct:.0f}"`. float()/int()/str() raise ValueError
+        # / TypeError on type mismatch — caught by the except below and
+        # downgraded to a warning + None return (augmentation disabled).
         return CoverageContext(
-            timestamp=data.get("timestamp", ""),
-            totals_pct=totals.get("pct", 0.0),
-            totals_tone=totals.get("tone", ""),
-            totals_covered_branches=totals.get("covered_branches", 0),
-            totals_total_branches=totals.get("total_branches", 0),
+            timestamp=str(data.get("timestamp", "")),
+            totals_pct=float(totals.get("pct", 0.0)),
+            totals_tone=str(totals.get("tone", "")),
+            totals_covered_branches=int(totals.get("covered_branches", 0)),
+            totals_total_branches=int(totals.get("total_branches", 0)),
             endpoints_summary=endpoints_summary,
             endpoints_uncovered_flat=endpoints_uncovered_flat,
-            audit_reconciled=audit.get("reconciled", True),
+            audit_reconciled=bool(audit.get("reconciled", True)),
             audit_unattributed_count=len(audit.get("unattributed_branches", [])),
         )
-    except (KeyError, TypeError, AttributeError) as exc:
+    except (KeyError, TypeError, AttributeError, ValueError) as exc:
         _LOG.warning("coverage.json schema mismatch — augmentation disabled: %s", exc)
         return None
 

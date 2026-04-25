@@ -179,6 +179,56 @@ class TestCoverageAugmentation:
             for rec in caplog.records  # type: ignore[attr-defined]
         ), f"expected schema-mismatch warning; got {[r.message for r in caplog.records]}"  # type: ignore[attr-defined]
 
+    def test_string_scalar_pct_returns_none_context(self, tmp_path: Path, caplog: object) -> None:
+        """Per Phase 5 code-review iter 2 P1 (Codex): a coverage.json with
+        valid dict shape but string-typed scalars (e.g., `pct: "75"`) must
+        NOT pass through to build_coverage_summary, which would crash on
+        `f"{pct:.0f}"` (ValueError on str format-spec).
+
+        The builder must coerce scalars (float/int/str) at construction
+        time; on type mismatch the ValueError is caught and the function
+        returns None + warning."""
+        import json
+        import logging
+        from datetime import UTC, datetime
+
+        from tools.dashboard.analyzer import load_coverage_context_if_fresh
+
+        ndjson = tmp_path / "frontend" / "test-results" / "cucumber.ndjson"
+        ndjson.parent.mkdir(parents=True)
+        ndjson.write_text("")
+        cov_json = tmp_path / "tests" / "bdd" / "reports" / "coverage.json"
+        cov_json.parent.mkdir(parents=True)
+        cov_ts = datetime.fromtimestamp(ndjson.stat().st_mtime, tz=UTC).isoformat()
+        cov_json.write_text(
+            json.dumps(
+                {
+                    "timestamp": cov_ts,
+                    # `pct` is a string — would crash f"{ctx.totals_pct:.0f}"
+                    "totals": {
+                        "pct": "not-a-number",
+                        "tone": "warning",
+                        "covered_branches": 10,
+                        "total_branches": 20,
+                    },
+                    "endpoints": [],
+                    "audit": {"reconciled": True, "unattributed_branches": []},
+                }
+            )
+        )
+
+        with caplog.at_level(logging.WARNING):  # type: ignore[attr-defined]
+            cov = load_coverage_context_if_fresh(ndjson)
+
+        assert cov is None, (
+            "Expected None when totals.pct is a non-numeric string — got a "
+            "CoverageContext that would crash build_coverage_summary later."
+        )
+        assert any(
+            "schema mismatch" in rec.message
+            for rec in caplog.records  # type: ignore[attr-defined]
+        )
+
     def test_fresh_coverage_json_returns_context(self, tmp_path: Path) -> None:
         import json
         from datetime import UTC, datetime
