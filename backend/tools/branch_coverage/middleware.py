@@ -1,12 +1,33 @@
 """CoverageContextMiddleware: per-endpoint attribution for coverage.py.
 
 Calls coverage.Coverage.current().switch_context(f"{method} {route_template}")
-on each request start; resets to "" on response end (even if the handler
-raises). No-op when coverage.py is not running.
+on each request start. NO finally-reset to "" — empirically verified that
+on coverage.py 7.13.5, calling `switch_context("")` between request labels
+silently drops every context AFTER the first. See "Reset trade-off" below.
 
 Concurrency constraint: switch_context is process-global. Instrumented
 runs MUST use a single uvicorn worker + sequential cucumber. See design
 spec §12 risk #6.
+
+Reset trade-off (D3 implementer + post-D1 follow-up, 2026-04-24):
+    coverage.py 7.13.5's switch_context() exhibits a buffer-flush bug where
+    calling `switch_context("")` between distinct labels causes subsequent
+    `switch_context("X")` calls to be silently ignored — only the FIRST
+    label's arcs are recorded; later labels' arcs are mis-attributed (e.g.,
+    the "" reset itself, or absorbed into the next-next label).
+
+    Production has many sequential requests against the same handlers, so
+    a finally-reset would silently break per-endpoint attribution for all
+    requests after the first.
+
+    This middleware therefore does NOT reset. Trade-off: any code that
+    runs between requests (background tasks, lifespan hooks, idle work)
+    gets attributed to the PREVIOUS request's context. For Hangman's
+    sequential BDD suite this is an acceptable accuracy cost.
+
+    H1 live-smoke checks (positive `/guesses` credits apply_guess +
+    negative `/categories` doesn't reach apply_guess) will catch any
+    practical breakage from this trade-off.
 """
 
 from __future__ import annotations
@@ -29,21 +50,14 @@ class CoverageContextMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         cov = coverage.Coverage.current()
-        context_label = self._resolve_context(request)
         if cov is not None:
+            context_label = self._resolve_context(request)
             try:
                 cov.switch_context(context_label)
             except Exception as exc:  # noqa: BLE001 — coverage.py should never fail the request
                 _LOG.warning("switch_context(%r) failed: %s", context_label, exc)
-        try:
-            response = await call_next(request)
-        finally:
-            if cov is not None:
-                try:
-                    cov.switch_context("")  # reset
-                except Exception as exc:  # noqa: BLE001
-                    _LOG.warning("switch_context('') failed: %s", exc)
-        return response
+        # No finally-reset — see module docstring "Reset trade-off".
+        return await call_next(request)
 
     @staticmethod
     def _resolve_context(request: Request) -> str:

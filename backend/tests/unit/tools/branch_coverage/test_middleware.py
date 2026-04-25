@@ -17,7 +17,14 @@ from tools.branch_coverage.middleware import CoverageContextMiddleware
 
 
 class _CovSpy:
-    """Records every switch_context call as (label, "" reset) tuples."""
+    """Records every switch_context call.
+
+    Per the post-D1 follow-up (coverage.py 7.13.5 buffer-flush bug — see
+    middleware.py docstring "Reset trade-off"): the middleware does NOT
+    call switch_context("") after each request. So `contexts_set` no
+    longer requires a trailing "" reset; it just collects every non-empty
+    label that was set.
+    """
 
     def __init__(self) -> None:
         self.calls: list[str] = []
@@ -26,13 +33,8 @@ class _CovSpy:
         self.calls.append(label)
 
     @property
-    def contexts_set(self) -> set[tuple[str, str]]:
-        # Pair each non-empty label with the trailing reset.
-        result: set[tuple[str, str]] = set()
-        for i, label in enumerate(self.calls):
-            if label and i + 1 < len(self.calls) and self.calls[i + 1] == "":
-                result.add((label, ""))
-        return result
+    def contexts_seen(self) -> set[str]:
+        return {label for label in self.calls if label}
 
 
 @pytest.fixture
@@ -70,7 +72,6 @@ class TestContextSwitching:
         instrumented_app.get("/items/abc123")
         calls = [call.args[0] for call in fake_coverage.switch_context.call_args_list]
         assert "GET /items/{item_id}" in calls  # matched route template
-        assert "" in calls  # reset after response
 
     def test_post_request_switches_context(
         self, instrumented_app: TestClient, fake_coverage: MagicMock
@@ -78,7 +79,6 @@ class TestContextSwitching:
         instrumented_app.post("/items")
         calls = [call.args[0] for call in fake_coverage.switch_context.call_args_list]
         assert "POST /items" in calls
-        assert "" in calls
 
     def test_path_template_normalizes_across_concrete_paths(
         self, instrumented_app: TestClient, fake_coverage: MagicMock
@@ -107,10 +107,10 @@ class TestContextSwitching:
         client = TestClient(test_app)
         client.get("/items/abc123")
 
-        assert ("GET /items/{item_id}", "") in spy.contexts_set, (
-            f"Expected template, got {spy.contexts_set!r}"
+        assert "GET /items/{item_id}" in spy.contexts_seen, (
+            f"Expected template, got {spy.contexts_seen!r}"
         )
-        assert ("GET /items/abc123", "") not in spy.contexts_set, (
+        assert "GET /items/abc123" not in spy.contexts_seen, (
             "Concrete path leaked into switch_context — route matching broken."
         )
 
@@ -137,10 +137,17 @@ class TestDegradedPath:
 
 
 class TestErrorHandling:
-    def test_handler_exception_still_resets_context(self, fake_coverage: MagicMock) -> None:
-        """Even if the route handler raises, the middleware must reset
-        the context in a finally block — otherwise subsequent requests
-        leak the previous endpoint's label."""
+    def test_handler_exception_still_records_context(self, fake_coverage: MagicMock) -> None:
+        """Even if the route handler raises, the middleware records its
+        context label BEFORE the call_next — so the failed request's
+        partial work is correctly attributed.
+
+        Per the post-D1 follow-up (coverage.py 7.13.5 buffer-flush bug):
+        the middleware no longer calls switch_context("") in a finally
+        block. The exception path must still set the context label
+        (which happens before call_next), and that label persists until
+        the next request's switch_context() overrides it.
+        """
         app = FastAPI()
 
         @app.get("/boom")
@@ -153,5 +160,4 @@ class TestErrorHandling:
         with pytest.raises(RuntimeError, match="handler failure"):
             client.get("/boom")
         calls = [call.args[0] for call in fake_coverage.switch_context.call_args_list]
-        # The last call must be the reset.
-        assert calls[-1] == ""
+        assert "GET /boom" in calls, f"Expected GET /boom in switch_context calls, got {calls}"
