@@ -1890,6 +1890,71 @@ class TestLoadPerContextHits:
         union = frozenset().union(*result.hits_by_context.values())
         assert result.all_hits == union
 
+    def test_hits_exclude_non_branch_linear_flow_arcs(
+        self, tmp_path: Path
+    ) -> None:
+        # Per plan-review iter 8 P1 (Codex): a file with linear flow
+        # between non-branch statements (e.g., `a = 1\nb = 2`) generates
+        # arcs in coverage.py's data even though no branching happened.
+        # Without filtering, those arcs would project to source-line tuples
+        # that the Grader treats as branch hits — inflating totals,
+        # creating bogus extra_coverage. This test proves they are filtered
+        # at the loader layer.
+        import coverage as cov_mod
+        target = tmp_path / "linear.py"
+        # Two functions: one with linear flow only (no branches), one with
+        # exactly one `if`. Total branch lines = 1 (only `if x > 0`).
+        target.write_text(
+            "def linear_only():\n"
+            "    a = 1\n"
+            "    b = 2\n"
+            "    c = a + b\n"
+            "    return c\n"
+            "\n"
+            "def with_branch(x):\n"
+            "    if x > 0:\n"
+            "        return 1\n"
+            "    return 0\n"
+        )
+        cov_path = tmp_path / ".coverage"
+        c = cov_mod.Coverage(data_file=str(cov_path), branch=True, source=[str(tmp_path)])
+        c.start()
+        c.switch_context("ctx_a")
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("linear", target)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        # Execute BOTH functions: linear_only (5 lines of linear flow) and
+        # with_branch with x=5 (taken branch).
+        mod.linear_only()
+        mod.with_branch(5)
+        c.stop()
+        c.save()
+
+        result = CoverageDataLoader().load(cov_path)
+        # Total branch lines: exactly 1 (the `if x > 0`). If unfiltered,
+        # `all_hits` would contain the 4+ linear-flow arcs from
+        # linear_only() too — the assertion below would catch it.
+        ((_file, count),) = result.total_branches_per_file.items()
+        assert count == 1, (
+            f"Expected 1 branch line in linear.py (only `if x > 0`), got {count}. "
+            f"_authoritative_branch_lines may be over-counting."
+        )
+        # Each hit in all_hits must have its source line == the branch line.
+        # If linear-flow arcs leaked in, their source lines would be the
+        # linear statement lines, not the `if` line.
+        # The fixture's `if x > 0` is at line 8; with x=5 the taken arc is
+        # 8->9 (or whatever coverage.py records). The KEY assertion: every
+        # arc's source-line must be IN the branch_lines set (line 8).
+        for (f, bid) in result.all_hits:
+            src_line = int(bid.split("->", 1)[0])
+            # Branch line 8 is the only valid source-line for branch hits.
+            assert src_line == 8, (
+                f"Hit ({f}, {bid}) has source-line {src_line} which is NOT a "
+                f"branch line. Linear-flow arc leaked through filter — "
+                f"iter 8 P1 Codex regression."
+            )
+
 
 class TestMissingFile:
     def test_raises_specific_error(self, tmp_path: Path) -> None:
@@ -1947,16 +2012,30 @@ class CoverageDataLoader:
         measured_files = data.measured_files()
         contexts = list(data.measured_contexts()) or [""]
 
+        # Compute authoritative branch source-line sets per file ONCE.
+        # Per plan-review iter 8 P1 (Codex): we filter per-context arcs to
+        # only those whose source line IS a branch line, so non-branch
+        # linear-flow arcs (e.g., `a = 1` followed by `b = 2` produces
+        # arc (line_a, line_b)) don't get into hits_by_context. Without
+        # this filter, the line-granularity projection in E1's Grader would
+        # treat every executed line as a branch hit — inflating totals,
+        # creating bogus extra_coverage, breaking reconciliation.
+        branch_lines_per_file: dict[str, set[int]] = {}
+        for file in measured_files:
+            branch_lines_per_file[file] = self._authoritative_branch_lines(
+                cov, data, file
+            )
+
         # Per-context hit sets: dict[context_label, frozenset[(file, branch_id)]].
-        # Per plan-review iter 5 P2 (Claude): removed pre-iter-4 dead local +
-        # stale `set_query_contexts`/aggregate-arcs comment block; the patched
-        # `_arcs_for_context` is now the single source of truth for per-context
-        # hit sets via `data.arcs(file, contexts=[label])`.
+        # Each arc kept here has its SOURCE LINE in branch_lines_per_file[file],
+        # so projecting to (file, source_line) in E1's Grader yields a true
+        # branch hit set.
         hits_by_context: dict[str, frozenset[tuple[str, str]]] = {}
         for ctx in contexts:
             hits: set[tuple[str, str]] = set()
             for file in measured_files:
-                for arc in self._arcs_for_context(data, file, ctx):
+                bl = branch_lines_per_file[file]
+                for arc in self._arcs_for_context(data, file, ctx, bl):
                     hits.add((file, self._arc_to_id(arc)))
             hits_by_context[ctx] = frozenset(hits)
 
@@ -1970,10 +2049,9 @@ class CoverageDataLoader:
         # iter 6 P1 (Codex): switched from arc counting to source-line
         # counting via `Analysis.branch_lines()` so totals match
         # Reachability's per-conditional emission semantics.
-        total_branches_per_file: dict[str, int] = {}
-        for file in measured_files:
-            branch_lines = self._authoritative_branch_lines(cov, data, file)
-            total_branches_per_file[file] = len(branch_lines)
+        total_branches_per_file: dict[str, int] = {
+            file: len(bl) for file, bl in branch_lines_per_file.items()
+        }
 
         return LoadedCoverage(
             hits_by_context=hits_by_context,
@@ -1986,8 +2064,13 @@ class CoverageDataLoader:
         return f"{arc[0]}->{arc[1]}"
 
     @staticmethod
-    def _arcs_for_context(data, file: str, context: str) -> list[tuple[int, int]]:
-        """Fetch arcs hit under a specific context.
+    def _arcs_for_context(
+        data,
+        file: str,
+        context: str,
+        branch_lines: set[int],
+    ) -> list[tuple[int, int]]:
+        """Fetch arcs hit under a specific context, filtered to branch arcs only.
 
         Per plan-review iter 4 P1 (Codex) + design spec §4.5 line 478:
         use the public per-context kwarg `CoverageData.arcs(file, contexts=[label])`
@@ -1995,12 +2078,26 @@ class CoverageDataLoader:
         public in coverage.py 7.x; the kwarg form is what the design specifies
         and avoids the global-state side effect of set_query_contexts.
 
+        Per plan-review iter 8 P1 (Codex): filter arcs by their SOURCE
+        LINE membership in `branch_lines` — the authoritative set of
+        branch points in this file (from `Analysis.branch_lines()`).
+        Without this filter, linear-flow arcs (e.g., from `a = 1\nb = 2`)
+        slip into the per-context hit set and the Grader's source-line
+        projection mistakes them for branch hits.
+
+        Also filter out exit arcs (negative target line) since those are
+        not user-visible branches and the Reachability AST walker does
+        not emit them either.
+
         Empty-string context matches hits that arrived without a tag
         (startup, shutdown, background tasks).
         """
         contexts = [context] if context else [""]
         arcs = data.arcs(file, contexts=contexts) or []
-        return [a for a in arcs if a[1] > 0]  # filter exit arcs (negative target lines)
+        return [
+            a for a in arcs
+            if a[1] > 0 and a[0] in branch_lines
+        ]
 
     @staticmethod
     def _authoritative_branch_lines(cov, data, file: str) -> set[int]:
@@ -2389,9 +2486,23 @@ class TestTotals:
 
 
 class TestArcSourceLine:
-    # Per plan-review iter 7 P2 (Codex): _arc_source_line's docstring
-    # documents support for negative-target exit arcs ("10->-1") and a
-    # bare-line fallback ("10"); both must be tested directly.
+    """Forward-looking regression guards on the `_arc_source_line` helper's
+    documented contract.
+
+    Per plan-review iter 7 P2 (Codex) + iter 8 P2 follow-up: the helper's
+    docstring lists three supported input formats (normal arc, negative-
+    target exit arc, bare-line fallback). Each test below pins one of those
+    formats so a future refactor — e.g., switching to a regex parser, or
+    inlining `int(...)` somewhere that breaks one path — gets caught
+    immediately at unit-test time instead of producing silent off-by-one
+    errors in coverage.json.
+
+    Note: the iter-6 BEHAVIORAL fix (line-granularity matching across
+    Reachability and coverage.py) is regression-tested by
+    `test_else_arm_arc_target_still_matches_branch_at_source_line` in
+    `TestPerEndpointIntersection` above. These tests are about the
+    helper's own contract, not the line-granularity pivot.
+    """
 
     def test_extracts_source_line_from_normal_arc(self) -> None:
         from tools.branch_coverage.grader import _arc_source_line
@@ -4676,13 +4787,45 @@ if forfeit:
 else:
     print('⚠ /forfeit endpoint not found — Hangman may not have this route, '
           'or RouteEnumerator did not pick it up. Verify against routes.py.')
+
+# Per plan-review iter 8 P1 (Codex): POSITIVE assertion that line-level
+# matching is actually working. The forfeit-uncovered check is necessary
+# but not sufficient — if the Grader regressed to exact (file, branch_id)
+# matching, /guesses would also fail to credit apply_guess (because
+# coverage.py's real arc IDs don't match Reachability's synthetic ones),
+# AND /forfeit would still show uncovered. The smoke would pass for the
+# wrong reason. Asserting that /guesses POSITIVELY credits apply_guess
+# branches catches that regression.
+g_apply_guess_funcs = [
+    fn for fn in guesses['reachable_functions']
+    if 'apply_guess' in fn['qualname']
+]
+g_apply_guess_covered = sum(fn['covered_branches'] for fn in g_apply_guess_funcs)
+g_apply_guess_total = sum(fn['total_branches'] for fn in g_apply_guess_funcs)
+print(f'/guesses apply_guess coverage: {g_apply_guess_covered}/{g_apply_guess_total} branches')
+import sys
+if g_apply_guess_total == 0:
+    print('⚠ apply_guess has 0 reachable_branches under /guesses — '
+          'Reachability may have missed the function. Verify pyan3 graph.')
+    # Not a hard fail — could be a static-analysis miss; warn and continue.
+elif g_apply_guess_covered == 0:
+    print('❌ /guesses shows ZERO covered apply_guess branches despite '
+          'extensive guess scenarios.')
+    print('   Likely cause: line-level matching regressed to exact arc-id.')
+    print('   Check: Grader._grade_endpoint must project context_hits to '
+          '(file, source_line) before intersecting with branches.')
+    sys.exit(2)
+else:
+    print(f'✓ Line-level matching works: /guesses credits '
+          f'{g_apply_guess_covered}/{g_apply_guess_total} apply_guess branches')
 "
 ```
 
 **Acceptance:**
 
-- If the shared-helper attribution warning fires (Option B works correctly): proceed.
-- If `/forfeit` shows 100% coverage on shared helpers despite having no scenarios: middleware is broken — investigate. Likely causes: `coverage.Coverage.current()` returns None at request time (middleware no-ops in production runs), `switch_context` argument format mismatch, or context names don't match what Grader expects.
+- If the path-format invariant + vacuous-PASS guard pass AND the shared-helper attribution warning fires (`/forfeit` shows uncovered) AND `/guesses` POSITIVELY credits apply_guess branches: line-level matching + per-endpoint attribution both work. Proceed.
+- If `/guesses` shows 0 covered apply_guess branches: Grader regressed to exact arc-id matching — investigate `_grade_endpoint`'s `_arc_source_line` projection.
+- If `/forfeit` shows 100% coverage on shared helpers despite having no scenarios: middleware is broken — investigate. Likely causes: `coverage.Coverage.current()` returns None at request time, `switch_context` argument format mismatch, route templates don't match Grader's lookup keys.
 - If `/forfeit` doesn't exist as a route: pick another shared-helper case from the actual Hangman API surface; the principle holds.
 
 - [ ] **Step 8: Verify Feature 2 augmentation**
