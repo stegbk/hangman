@@ -34,3 +34,8 @@ backend/hangman.test.db*
 # BDD dashboard (Feature 2)
 .bdd-history/
 tests/bdd/reports/
+
+# Feature 3: BDD Branch Coverage
+.backend-coverage.pid
+.coverage
+.coverage.*
