@@ -368,9 +368,9 @@ Expected: prints version, confirms `uses_graph` is a dict, prints node attrs. Ca
 - If `uses_graph` doesn't exist (pyan3 renamed it) → update C2's `callgraph.py` snippet with the actual attribute name, document in spike_results.md, then proceed.
 - If pyan3 fails to install or analyze → escalate; consider vendoring pyan3 source per design spec §12 risk #1.
 
-- [ ] **Step 2: Verify coverage.py 7.13 per-context arc API + analysis2 return shape**
+- [ ] **Step 2: Verify coverage.py 7.13 per-context arc API + `analysis2().branch_lines()` return shape**
 
-Per plan-review iter 2 P1: presence-check alone isn't enough — D3 depends on `analysis2(file).arc_possibilities()`. If `analysis2()` exists but its return shape differs (no `arc_possibilities` method), D3 hard-fails at runtime AFTER the spike "passed." Validate the actual return shape:
+Per plan-review iter 2 P1 + iter 6 P1 (Codex): presence-check alone isn't enough — D3 depends on (a) `data.arcs(file, contexts=[label])` for per-context hit sets, and (b) `analysis2(file).branch_lines()` for authoritative branch-source-line counts. If either signature differs, D3 hard-fails at runtime AFTER the spike "passed." Validate both:
 
 ```bash
 cd backend && uv run python -c "
@@ -382,14 +382,24 @@ print('coverage version:', coverage.__version__)
 
 # Method-presence check
 d = CoverageData()
-for m in ('set_query_contexts', 'arcs', 'lines', 'measured_files', 'measured_contexts'):
+for m in ('arcs', 'lines', 'measured_files', 'measured_contexts'):
     print(f'  CoverageData.{m}: {hasattr(d, m)}')
-for m in ('current', '_analyze', 'analysis2'):
+for m in ('current', 'analysis2'):
     print(f'  Coverage.{m}: {hasattr(Coverage, m)}')
 
-# Return-shape check for analysis2 — D3 calls .arc_possibilities() on it.
+# Per-context arcs() kwarg check — D3 uses data.arcs(file, contexts=[label]).
+import inspect
+try:
+    sig = inspect.signature(CoverageData.arcs)
+    print(f'  CoverageData.arcs signature: {sig}')
+    print(f'  has contexts kwarg: {\"contexts\" in sig.parameters}')
+except Exception as exc:
+    print(f'  ⚠ inspect.signature(CoverageData.arcs) failed: {exc}')
+
+# Return-shape check for analysis2().branch_lines() — D3 calls this for
+# authoritative branch source-line counts.
 print()
-print('Return-shape check on analysis2(file):')
+print('Return-shape check on analysis2(file).branch_lines():')
 with tempfile.TemporaryDirectory() as tmp:
     target = os.path.join(tmp, 'tiny.py')
     with open(target, 'w') as f:
@@ -406,13 +416,15 @@ with tempfile.TemporaryDirectory() as tmp:
     try:
         analysis = cov.analysis2(target)
         print(f'  analysis2 returned: {type(analysis).__name__}')
-        print(f'  has arc_possibilities: {hasattr(analysis, \"arc_possibilities\")}')
-        if hasattr(analysis, 'arc_possibilities'):
-            arcs = analysis.arc_possibilities()
-            print(f'  arc_possibilities() returned: {type(arcs).__name__}, {len(arcs) if hasattr(arcs, \"__len__\") else \"?\"} items')
-            print(f'  first arc: {arcs[0] if arcs else \"(empty)\"}')
+        print(f'  has branch_lines: {hasattr(analysis, \"branch_lines\")}')
+        print(f'  has arc_possibilities (legacy): {hasattr(analysis, \"arc_possibilities\")}')
+        if hasattr(analysis, 'branch_lines'):
+            bl = analysis.branch_lines()
+            print(f'  branch_lines() returned: {type(bl).__name__}, items: {list(bl)}')
+            # tiny.py has exactly one branch line (the `if x > 0` at line 2)
+            print(f'  expected: [2]; got: {sorted(bl)}')
         else:
-            print('  ⚠ analysis2 returned an object WITHOUT arc_possibilities — D3 will hard-fail')
+            print('  ⚠ analysis2 returned an object WITHOUT branch_lines — D3 will hard-fail')
     except (AttributeError, TypeError) as exc:
         print(f'  ⚠ analysis2 raised: {exc} — D3 will hard-fail')
 "
@@ -420,9 +432,9 @@ with tempfile.TemporaryDirectory() as tmp:
 
 **Decision criteria:**
 
-- If `set_query_contexts` + `arcs` are present on `CoverageData` AND `analysis2(file).arc_possibilities()` returns a list of arc tuples → **D3 design is correct, proceed.**
-- If `set_query_contexts` is missing → switch D3 per-context loader to use `data.contexts_by_lineno()` (documented public surface).
-- If `analysis2` exists but `arc_possibilities` does not → **PATCH D3** before any task uses it. The Analysis class returned by analysis2 in coverage.py 7.x is documented to have `arc_possibilities`; if it doesn't, switch to `cov._analyze().branch_lines()` with explicit private-API documentation.
+- If `data.arcs` accepts `contexts` kwarg AND `analysis2(file).branch_lines()` returns an iterable of source line numbers → **D3 design is correct, proceed.**
+- If `arcs` lacks `contexts` kwarg → fall back to `set_query_contexts([label])` + `data.arcs(file)` with try/finally cleanup; document the regression in spike_results.md and open a tracking issue noting the coverage.py version.
+- If `analysis2` exists but `branch_lines` does not → **PATCH D3** before any task uses it. Try `analysis.branch_stats()` (returns dict[line, (n_taken, n_total)]) and use `set(branch_stats.keys())` instead. If neither is present, fall back to `cov._analyze().branch_lines()` with explicit private-API documentation.
 - If `analysis2` is missing entirely → **ESCALATE** to user. coverage.py 7.x has had analysis2 since 4.x; its absence indicates a major version mismatch. Either pin coverage.py to a tested version or switch the authoritative-branches strategy.
 
 **No lossy fallback** in any case — D3 hard-fails on shape mismatch with a specific error pointing at this spike.
@@ -1566,6 +1578,7 @@ import coverage
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
+from starlette.routing import Match
 from starlette.types import ASGIApp
 
 _LOG = logging.getLogger(__name__)
@@ -1595,12 +1608,49 @@ class CoverageContextMiddleware(BaseHTTPMiddleware):
 
     @staticmethod
     def _resolve_context(request: Request) -> str:
-        # Prefer the matched route's path template (e.g. "/items/{id}");
-        # normalizes concrete paths across requests.
-        route = request.scope.get("route")
-        template = getattr(route, "path", None) if route else None
-        path = template or request.url.path
-        return f"{request.method} {path}"
+        """Return f"{method} {route_template}" — the path TEMPLATE that the
+        Grader uses as its context lookup key.
+
+        Per plan-review iter 6 P1 (Codex): the previous version checked
+        `request.scope["route"]` (populated by Starlette's Router) which is
+        ALWAYS empty when this middleware runs — Starlette dispatches
+        middleware before route resolution. The fallback to
+        `request.url.path` was therefore always taken, recording concrete
+        paths like "/games/123/guesses". The Grader looks up by template
+        ("/games/{game_id}/guesses"), so every path-param endpoint had its
+        per-context hits silently dropped → systematically wrong coverage
+        for any route with a path param.
+
+        Fix: do our own route matching against `request.app.router.routes`
+        using each Route's `matches(scope)` method. `request.app` IS
+        populated in the ASGI scope by the time middleware runs (it's set
+        by the top-level Starlette app before any middleware). On match,
+        read `route.path` (Starlette's standard attribute, holds the
+        template like "/games/{game_id}/guesses").
+        """
+        app = request.scope.get("app")
+        if app is None:
+            return f"{request.method} {request.url.path}"
+        for route in getattr(app.router, "routes", []):
+            try:
+                result = route.matches(request.scope)
+            except Exception:  # noqa: BLE001
+                continue
+            match = result[0] if isinstance(result, tuple) else result
+            if match == Match.FULL:
+                template = getattr(route, "path", None) or getattr(route, "path_format", None)
+                if template:
+                    return f"{request.method} {template}"
+        # Fallback: concrete path. Should be rare in production (every
+        # served request matches a route). Logged at WARNING so a real
+        # mismatch shows up in the H1 live smoke.
+        _LOG.warning(
+            "No route template matched %s %s — using concrete path. "
+            "This will not match Grader's lookup.",
+            request.method,
+            request.url.path,
+        )
+        return f"{request.method} {request.url.path}"
 ```
 
 - [ ] **Step 4: Run tests — expect pass**
@@ -1613,7 +1663,41 @@ Expected: all pass.
 1. **The constraint** — instrumented runs are single-uvicorn-worker + sequential-cucumber by construction (see design spec §12 risk #6). FastAPI's `TestClient` is also synchronous (one request at a time on the test thread), which matches the constraint at unit-test time.
 2. **The H1 live smoke** — runs the real BDD suite under real `coverage run` instrumentation against a real backend, then verifies per-endpoint attribution by inspecting `coverage.json`. If a shared helper appears as covered under endpoint A's context AND uncovered under endpoint B's context (where B's scenarios don't exercise it), the middleware works as designed.
 
-**Note on `test_get_request_switches_context`:** TestClient may not populate `request.scope["route"]` before the middleware runs (routing happens AFTER the middleware dispatch). In that case the test would see `"GET /items/abc123"` instead of `"GET /items/{item_id}"`. If tests fail with this, **relax the test** (not the code) — accept either the template or the concrete path (the fallback behavior is documented). The real-run behavior via uvicorn is correct per the FastAPI routing model; TestClient is just an imperfect harness for this specific attribute.
+**Note on `test_get_request_switches_context` (per plan-review iter 6 P1 Codex update):** the middleware now does its own route matching against `request.app.router.routes` using `route.matches(scope)`. `request.scope["app"]` IS populated by the time middleware runs (Starlette sets it at the top), so route matching works in TestClient AND in production uvicorn — both should resolve the path-param route to its template. Tests MUST assert the template (`"GET /items/{item_id}"`), not the concrete path. If a test sees the concrete path, the route-matching code is broken — fix the code, not the test.
+
+Add an additional test that explicitly exercises path-param resolution (the bug iter 6 fixed):
+
+```python
+def test_path_param_route_resolves_to_template(self, monkeypatch) -> None:
+    """A request to /items/abc123 must trigger switch_context("GET /items/{item_id}")
+    — the path TEMPLATE — not switch_context("GET /items/abc123").
+    Per plan-review iter 6 P1: this was systematically broken before
+    the route-matching fix."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    test_app = FastAPI()
+
+    @test_app.get("/items/{item_id}")
+    async def _get_item(item_id: str) -> dict[str, str]:
+        return {"id": item_id}
+
+    spy = _CovSpy()
+    monkeypatch.setattr(coverage.Coverage, "current", classmethod(lambda _cls: spy))
+
+    test_app.add_middleware(CoverageContextMiddleware)
+    client = TestClient(test_app)
+    client.get("/items/abc123")
+
+    assert ("GET /items/{item_id}", "") in spy.contexts_set, (
+        f"Expected template, got {spy.contexts_set!r}"
+    )
+    assert ("GET /items/abc123", "") not in spy.contexts_set, (
+        "Concrete path leaked into switch_context — route matching broken."
+    )
+```
+
+(`_CovSpy` is a small fake that records every `switch_context` call. Define it as a fixture or helper at the top of `test_middleware.py` if not already present.)
 
 - [ ] **Step 5: ruff + mypy**
 
@@ -1783,11 +1867,23 @@ class TestLoadPerContextHits:
     def test_total_branches_per_file_is_authoritative(
         self, tiny_covered_data: Path
     ) -> None:
+        # Per plan-review iter 6 P2 (Codex): assert exact count, not just
+        # > 0. The fixture's tiny.py has exactly ONE branch line (`if x > 0`).
+        # The previous `count > 0` would still pass if `_authoritative_branch_lines`
+        # over-counted (e.g., counted all arcs instead of branch-source-lines)
+        # — exactly the bug iter 6 patch (b) fixed.
         result = CoverageDataLoader().load(tiny_covered_data)
-        # tiny.py has exactly one branch (if x > 0 … else …).
-        assert len(result.total_branches_per_file) >= 1
-        for file, count in result.total_branches_per_file.items():
-            assert count > 0
+        assert len(result.total_branches_per_file) == 1, (
+            f"Expected exactly one measured file (tiny.py); got "
+            f"{list(result.total_branches_per_file.keys())}"
+        )
+        ((tiny_file, count),) = result.total_branches_per_file.items()
+        assert count == 1, (
+            f"Expected exactly 1 branch line in tiny.py (the `if x > 0`), "
+            f"got {count}. If this is >1, check that _authoritative_branch_lines "
+            f"is using `Analysis.branch_lines()` not `arc_possibilities()` — "
+            f"the latter counts all arcs including non-branch linear flow."
+        )
 
     def test_all_hits_is_union_of_contexts(self, tiny_covered_data: Path) -> None:
         result = CoverageDataLoader().load(tiny_covered_data)
@@ -1870,11 +1966,14 @@ class CoverageDataLoader:
             all_hits_set.update(s)
         all_hits = frozenset(all_hits_set)
 
-        # Authoritative branch counts per file
+        # Authoritative branch source-line counts per file. Per plan-review
+        # iter 6 P1 (Codex): switched from arc counting to source-line
+        # counting via `Analysis.branch_lines()` so totals match
+        # Reachability's per-conditional emission semantics.
         total_branches_per_file: dict[str, int] = {}
         for file in measured_files:
-            branch_arcs = self._authoritative_branches(cov, data, file)
-            total_branches_per_file[file] = len(branch_arcs)
+            branch_lines = self._authoritative_branch_lines(cov, data, file)
+            total_branches_per_file[file] = len(branch_lines)
 
         return LoadedCoverage(
             hits_by_context=hits_by_context,
@@ -1904,26 +2003,33 @@ class CoverageDataLoader:
         return [a for a in arcs if a[1] > 0]  # filter exit arcs (negative target lines)
 
     @staticmethod
-    def _authoritative_branches(cov, data, file: str) -> list[tuple[int, int]]:
-        """Enumerate branch arcs that EXIST in the file (independent of
-        whether they were hit), using coverage.py's PUBLIC `analysis2()`
-        API.
+    def _authoritative_branch_lines(cov, data, file: str) -> set[int]:
+        """Return the set of source LINES in `file` that are branch points
+        (have multiple possible exits — `if`, `while`, `for`, `try/except`,
+        match arms, etc.).
 
-        Per plan-review iter 4 P1 (Codex): in coverage.py 7.x,
-        `Coverage.analysis2(file)` returns an `Analysis` *object* (with
-        methods like `arc_possibilities()`), NOT a 5-tuple. The 5-tuple
-        shape `(filename, executable, excluded, missing, missing_formatted)`
-        was the deprecated `Coverage.analysis()` legacy form — that is not
-        what we call here. The A3 spike (Phase A) characterizes the actual
-        return shape on the installed coverage.py before C2/D3 run, so any
-        signature drift is caught upfront.
+        Per plan-review iter 6 P1 (Codex), this replaced the prior
+        arc-counting variant for two reasons:
 
-        The design spec §4.5 line 479 calls out `coverage.Analyzer` /
-        `Analysis` as the authoritative-total source; `analysis2()` is the
-        7.x entry-point that returns it. `arc_possibilities()` returns all
-        arc tuples that could execute (including branch arcs). We filter
-        exit arcs (negative target line) since those are not user-visible
-        branches and the Reachability AST walker does not emit them either.
+        1. **`arc_possibilities()` includes non-branch arcs.** Linear flow
+           between consecutive statements creates arcs too. Counting them
+           as "branches" inflated `total_branches_per_file`.
+
+        2. **Arc IDs aren't comparable to Reachability's synthetic
+           `f"{line}->{line+1}"` IDs.** Coverage.py records real arcs
+           (else-arms point elsewhere; multi-line bodies have non-
+           consecutive targets). The Grader now matches at source-line
+           granularity (see E1's `_arc_source_line` helper), so the
+           authoritative count must also be source-line-counted.
+
+        Source: coverage.py 7.x exposes `Analysis.branch_lines()` —
+        the documented method for "lines with branches" (per coverage.py's
+        own `branch_stats()`/`branch_lines()` design — used by `coverage
+        report` and `coverage html` to compute branch percentage).
+
+        The A3 spike (Phase A) characterizes `branch_lines` on the
+        installed coverage.py and updates this code if the API shape has
+        drifted.
 
         Hard-fail if the public API has shifted between A3 and D3 (rather
         than silently returning lossy data — per plan-review iter 1 P1).
@@ -1937,15 +2043,14 @@ class CoverageDataLoader:
                 f"spike should have caught this; re-run the spike or pin "
                 f"coverage.py to a known-good version."
             ) from exc
-        if not hasattr(analysis, "arc_possibilities"):
+        if not hasattr(analysis, "branch_lines"):
             raise CoverageDataLoadError(
                 f"Coverage.analysis2('{file}') returned shape lacking "
-                f"`arc_possibilities()` (got {type(analysis).__name__}); "
+                f"`branch_lines()` (got {type(analysis).__name__}); "
                 f"coverage.py public API has shifted between A3 spike and "
                 f"this run. Re-run the spike to characterize the new shape."
             )
-        possible = analysis.arc_possibilities()
-        return [a for a in possible if a[1] > 0]
+        return set(analysis.branch_lines())
 ```
 
 - [ ] **Step 4: Run tests — expect pass**
@@ -2253,6 +2358,35 @@ class TestTotals:
         assert report.totals.covered_branches == 1
         assert report.totals.pct == 100.0
 
+    def test_else_arm_arc_target_still_matches_branch_at_source_line(self) -> None:
+        # Per plan-review iter 6 P1 (Codex): coverage.py's real arc IDs
+        # for else-arms or multi-line bodies have non-`line+1` targets.
+        # Reachability emits synthetic `f"{line}->{line+1}"`. Direct equality
+        # on (file, branch_id) would miss every match where targets differ.
+        # The Grader projects to (file, source_line) for matching, so an
+        # else-arm hit ("10->15") still credits the branch at line 10.
+        ep = _ep("/a", "hangman.routes.handler_a")
+        branch = _branch("src/hangman/a.py", 10, "hangman.a.fn")
+        # branch.branch_id == "10->11" (synthetic from Reachability)
+        assert branch.branch_id == "10->11"
+        reachability = {ep: [branch]}
+        hits = LoadedCoverage(
+            # Coverage.py recorded the ELSE arm: 10->15 (not 10->11)
+            hits_by_context={"POST /a": frozenset({("src/hangman/a.py", "10->15")})},
+            total_branches_per_file={"src/hangman/a.py": 1},
+            all_hits=frozenset({("src/hangman/a.py", "10->15")}),
+        )
+        report = Grader().grade(reachability, hits)
+        ep_cov = report.endpoints[0]
+        # Source-line projection: ("src/hangman/a.py", 10) is in both sets.
+        assert ep_cov.covered_branches == 1, (
+            "Expected line-level match: branch at line 10 is hit by arc 10->15. "
+            "If 0, the Grader is still doing exact (file, branch_id) match — "
+            "iter 6 P1 Codex regression."
+        )
+        assert ep_cov.pct == 100.0
+        assert report.totals.covered_branches == 1
+
     def test_totals_excludes_out_of_scope_hits(self) -> None:
         # Per plan-review iter 4 P1 (Codex): hits in files not in
         # total_branches_per_file (out-of-scope leakage) MUST NOT count
@@ -2330,6 +2464,25 @@ def _tone(pct: float, total: int) -> Tone:
     return Tone.SUCCESS
 
 
+def _arc_source_line(branch_id: str) -> int:
+    """Extract the source line from an arc-id like '10->11' or '10->-1'.
+
+    Per plan-review iter 6 P1 (Codex): Reachability emits synthetic
+    `f"{line}->{line+1}"` IDs while coverage.py emits real arc IDs from
+    bytecode (else-arms point to non-consecutive lines, exception arcs
+    target handler lines, etc.). Direct equality on `(file, branch_id)`
+    misses every match where the targets differ. Projection to source
+    line `(file, src_line)` gives line-granularity matching that is
+    robust to representational differences — coverage.py's
+    `Analysis.branch_lines()` is also source-line-keyed, so the audit
+    invariant stays consistent.
+
+    Defensive: if the format ever changes (e.g. coverage.py emits a
+    bare line as `"10"` rather than `"10->11"`), fall through to int().
+    """
+    return int(branch_id.split("->", 1)[0])
+
+
 class Grader:
     def grade(
         self,
@@ -2342,15 +2495,22 @@ class Grader:
         ]
         endpoints_cov.sort(key=lambda c: (c.endpoint.path, c.endpoint.method))
 
-        # Deduped reachable enumeration across all endpoints (R).
-        enumerated_reachable: set[tuple[str, str]] = set()
+        # Deduped reachable enumeration as (file, source_line) tuples
+        # across all endpoints. Per iter 6 P1: line-granularity matches
+        # both coverage.py's `branch_lines()` semantics and the per-
+        # endpoint intersection in `_grade_endpoint`. Multiple
+        # ReachableBranches at the same (file, line) collapse to one entry
+        # — that's correct because Reachability emits one branch per
+        # conditional and coverage.py counts one branch-line per
+        # conditional.
+        enumerated_reachable_lines: set[tuple[str, int]] = set()
         for branches in reachability.values():
             for b in branches:
-                enumerated_reachable.add((b.file, b.branch_id))
+                enumerated_reachable_lines.add((b.file, b.line))
 
         extra_coverage = self._extra_coverage(reachability, hits)
 
-        audit = self._audit(enumerated_reachable, hits)
+        audit = self._audit(enumerated_reachable_lines, hits)
         totals = self._totals(hits)
 
         return CoverageReport(
@@ -2373,9 +2533,14 @@ class Grader:
     ) -> CoveragePerEndpoint:
         context_label = f"{endpoint.method} {endpoint.path}"
         context_hits = hits.hits_by_context.get(context_label, frozenset())
+        # Per plan-review iter 6 P1 (Codex): project context_hits to
+        # (file, source_line). See `_arc_source_line` docstring.
+        hit_source_lines = {
+            (f, _arc_source_line(bid)) for (f, bid) in context_hits
+        }
         total = len(branches)
         covered_set = {
-            b for b in branches if (b.file, b.branch_id) in context_hits
+            b for b in branches if (b.file, b.line) in hit_source_lines
         }
         covered = len(covered_set)
         pct = (covered / total * 100) if total else 0.0
@@ -2444,33 +2609,41 @@ class Grader:
 
     def _audit(
         self,
-        enumerated_reachable: set[tuple[str, str]],
+        enumerated_reachable_lines: set[tuple[str, int]],
         hits: LoadedCoverage,
     ) -> AuditReport:
-        """Per plan-review iter 4 P1 (Codex) + design spec §4.6 step 4:
-        audit enumeration is `reachable ∪ distinct(extra branch hits)`,
-        not `reachable` alone with `extra_count = 0`.
+        """Per plan-review iter 4 P1 (Codex) + iter 6 P1 (Codex) + design
+        spec §4.6 step 4: audit enumeration is `reachable_lines ∪
+        distinct(extra hit source-lines)`, both keyed at source-line
+        granularity (not arc granularity).
 
-        - R = enumerated_reachable (deduped across endpoints, by static graph)
-        - E = hits.all_hits − R (branches hit by the BDD suite that the
-              static graph did not link to any endpoint — typically shared
-              helpers reached via untagged contexts, or callsites pyan3
-              missed). E branches DO have known (file, branch_id) tuples
-              from coverage.py, so they CAN be counted in the enumeration.
-        - Audit invariant: per file, `auth = R_in_file + E_in_file +
-          unattributed_in_file`. `reconciled = True` iff the invariant
-          holds across every in-scope file.
+        - R = enumerated_reachable_lines (deduped (file, src_line) across
+              endpoints, from static graph)
+        - E = projected_all_hits − R (source-lines hit by the BDD suite
+              that the static graph did not link — typically shared helpers
+              reached via untagged contexts, or callsites pyan3 missed)
+        - Audit invariant: per file, `auth_branch_lines = R_in_file +
+          E_in_file + unattributed_in_file`. `reconciled = True` iff this
+          invariant holds across every in-scope file.
+
+        See `_arc_source_line` for why we project to source-line tuples.
         """
-        extra_branch_hits = hits.all_hits - enumerated_reachable
-        enumerated_total = enumerated_reachable | extra_branch_hits  # deduped union
+        # Project all hits to source-line tuples. Only count source-lines
+        # that are in scope; out-of-scope leakage is filtered defensively
+        # by the `if f in per_file_enumerated` check below.
+        all_hit_lines = {
+            (f, _arc_source_line(bid)) for (f, bid) in hits.all_hits
+        }
+        extra_hit_lines = all_hit_lines - enumerated_reachable_lines
+        enumerated_total = enumerated_reachable_lines | extra_hit_lines
 
         per_file_enumerated: dict[str, int] = {f: 0 for f in hits.total_branches_per_file}
-        for (f, _bid) in enumerated_total:
+        for (f, _line) in enumerated_total:
             if f in per_file_enumerated:
                 per_file_enumerated[f] += 1
-        # Hits in files NOT in total_branches_per_file are out-of-scope leakage
-        # (coverage.py's `source = src/hangman` config should prevent this; the
-        # filtering above is defensive).
+        # Lines in files NOT in total_branches_per_file are out-of-scope
+        # (coverage.py's `source = src/hangman` config should prevent this;
+        # the filter above is defensive).
 
         unattributed: list[UnattributedBranch] = []
         for file, auth_count in hits.total_branches_per_file.items():
@@ -2492,27 +2665,32 @@ class Grader:
         )
         return AuditReport(
             total_branches_per_coverage_py=total_authoritative,
-            total_branches_enumerated_via_reachability=len(enumerated_reachable),
-            extra_coverage_branches=len(extra_branch_hits),
+            total_branches_enumerated_via_reachability=len(enumerated_reachable_lines),
+            extra_coverage_branches=len(extra_hit_lines),
             unattributed_branches=tuple(unattributed),
             reconciled=reconciled,
         )
 
     def _totals(self, hits: LoadedCoverage) -> Totals:
-        """Per plan-review iter 4 P1 (Codex) + design spec §4.6 step 5:
-        `covered = |hits.all_hits ∩ all branches in backend/src/hangman/|`
-        — only in-scope hits count toward the headline percentage.
+        """Per plan-review iter 4 P1 + iter 6 P1 (Codex) + design spec
+        §4.6 step 5: project all_hits to (file, source_line) tuples,
+        intersect with in-scope files (keys of `total_branches_per_file`),
+        deduplicate, then count.
 
-        Coverage.py's `source = src/hangman` config (.coveragerc) should
-        already scope `all_hits` to in-scope files, but we filter
-        defensively in case a hit leaks in from outside the source root
-        (e.g., a third-party package whose path happens to match). The
-        in-scope set is the keys of `total_branches_per_file`, which is
-        derived from `measured_files()` filtered to the source path.
+        Source-line projection matches `_grade_endpoint` and `_audit` so
+        the totals are internally consistent with per-endpoint and audit
+        numbers. Two arcs from the same source line (e.g., if-arm and
+        else-arm) collapse to one branch-line, matching coverage.py's
+        `branch_lines()` semantics.
         """
         total = sum(hits.total_branches_per_file.values())
         in_scope_files = set(hits.total_branches_per_file.keys())
-        covered = sum(1 for (f, _bid) in hits.all_hits if f in in_scope_files)
+        all_hit_lines = {
+            (f, _arc_source_line(bid)) for (f, bid) in hits.all_hits
+        }
+        covered = sum(
+            1 for (f, _line) in all_hit_lines if f in in_scope_files
+        )
         pct = (covered / total * 100) if total else 0.0
         return Totals(
             total_branches=total,
@@ -2531,7 +2709,7 @@ class Grader:
 - [ ] **Step 4: Run tests — expect pass**
 
 Run: `cd backend && uv run pytest tests/unit/tools/branch_coverage/test_grader.py -v`
-Expected: all pass (13 tests — 11 original + 2 added in iter 4 patches: `test_extra_branch_hits_count_in_audit_enumeration` and `test_totals_excludes_out_of_scope_hits`).
+Expected: all pass (14 tests — 11 original + 2 added in iter 4 + 1 added in iter 6: `test_else_arm_arc_target_still_matches_branch_at_source_line`).
 
 - [ ] **Step 5: ruff + mypy**
 
