@@ -356,30 +356,64 @@ Expected: prints version, confirms `uses_graph` is a dict, prints node attrs. Ca
 - If `uses_graph` doesn't exist (pyan3 renamed it) → update C2's `callgraph.py` snippet with the actual attribute name, document in spike_results.md, then proceed.
 - If pyan3 fails to install or analyze → escalate; consider vendoring pyan3 source per design spec §12 risk #1.
 
-- [ ] **Step 2: Verify coverage.py 7.13 per-context arc API**
+- [ ] **Step 2: Verify coverage.py 7.13 per-context arc API + analysis2 return shape**
+
+Per plan-review iter 2 P1: presence-check alone isn't enough — D3 depends on `analysis2(file).arc_possibilities()`. If `analysis2()` exists but its return shape differs (no `arc_possibilities` method), D3 hard-fails at runtime AFTER the spike "passed." Validate the actual return shape:
 
 ```bash
 cd backend && uv run python -c "
+import tempfile, os
 import coverage
 from coverage import Coverage, CoverageData
+
 print('coverage version:', coverage.__version__)
+
+# Method-presence check
 d = CoverageData()
-print('CoverageData methods (relevant):')
 for m in ('set_query_contexts', 'arcs', 'lines', 'measured_files', 'measured_contexts'):
-    print(f'  {m}: {hasattr(d, m)}')
-print('Coverage class methods (relevant):')
+    print(f'  CoverageData.{m}: {hasattr(d, m)}')
 for m in ('current', '_analyze', 'analysis2'):
-    print(f'  {m}: {hasattr(Coverage, m)}')
+    print(f'  Coverage.{m}: {hasattr(Coverage, m)}')
+
+# Return-shape check for analysis2 — D3 calls .arc_possibilities() on it.
+print()
+print('Return-shape check on analysis2(file):')
+with tempfile.TemporaryDirectory() as tmp:
+    target = os.path.join(tmp, 'tiny.py')
+    with open(target, 'w') as f:
+        f.write('def f(x):\n    if x > 0:\n        return 1\n    return 0\n')
+    cov = Coverage(data_file=os.path.join(tmp, '.coverage'), branch=True, source=[tmp])
+    cov.start()
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('tiny', target)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    mod.f(5)
+    cov.stop()
+    cov.save()
+    try:
+        analysis = cov.analysis2(target)
+        print(f'  analysis2 returned: {type(analysis).__name__}')
+        print(f'  has arc_possibilities: {hasattr(analysis, \"arc_possibilities\")}')
+        if hasattr(analysis, 'arc_possibilities'):
+            arcs = analysis.arc_possibilities()
+            print(f'  arc_possibilities() returned: {type(arcs).__name__}, {len(arcs) if hasattr(arcs, \"__len__\") else \"?\"} items')
+            print(f'  first arc: {arcs[0] if arcs else \"(empty)\"}')
+        else:
+            print('  ⚠ analysis2 returned an object WITHOUT arc_possibilities — D3 will hard-fail')
+    except (AttributeError, TypeError) as exc:
+        print(f'  ⚠ analysis2 raised: {exc} — D3 will hard-fail')
 "
 ```
 
-Expected: confirms `set_query_contexts` and `arcs` are present on `CoverageData`. If `_analyze` exists on `Coverage` it's the documented private path; if `analysis2` exists, that's the documented public alternative.
-
 **Decision criteria:**
 
-- If `set_query_contexts` + `arcs` are public → keep D3 design.
-- If `set_query_contexts` is missing → switch D3 to per-context iteration via `data.contexts_by_lineno()` (documented public surface).
-- For authoritative branch totals: prefer `coverage.Coverage().analysis2(file)` (public, returns `(filename, executable, excluded, missing, missing_formatted)`) over `_analyze`. Update D3 design accordingly. **No lossy fallback — if the API isn't found, hard-fail with a specific error.**
+- If `set_query_contexts` + `arcs` are present on `CoverageData` AND `analysis2(file).arc_possibilities()` returns a list of arc tuples → **D3 design is correct, proceed.**
+- If `set_query_contexts` is missing → switch D3 per-context loader to use `data.contexts_by_lineno()` (documented public surface).
+- If `analysis2` exists but `arc_possibilities` does not → **PATCH D3** before any task uses it. The Analysis class returned by analysis2 in coverage.py 7.x is documented to have `arc_possibilities`; if it doesn't, switch to `cov._analyze().branch_lines()` with explicit private-API documentation.
+- If `analysis2` is missing entirely → **ESCALATE** to user. coverage.py 7.x has had analysis2 since 4.x; its absence indicates a major version mismatch. Either pin coverage.py to a tested version or switch the authoritative-branches strategy.
+
+**No lossy fallback** in any case — D3 hard-fails on shape mismatch with a specific error pointing at this spike.
 
 - [ ] **Step 3: Audit `from hangman.main import app` for import-time side effects**
 
@@ -3354,70 +3388,112 @@ class CoverageContext:
 
 - [ ] **Step 2: Modify `backend/tools/dashboard/analyzer.py` — staleness check**
 
-Read the existing file. Locate the top of `run()`. Add before the first line:
+**Per plan-review iter 2 P1: define these as MODULE-LEVEL functions, not Analyzer instance methods.** G2 needs to import them in `__main__.py` to construct `LlmEvaluator(coverage_summary=...)` BEFORE the Analyzer is constructed (since the LLM is one of Analyzer's injected dependencies). Module-level scope satisfies both call-sites.
+
+Read the existing `analyzer.py`. At module level (between the imports and the `class Analyzer:` declaration), add:
 
 ```python
-    coverage_context = self._load_coverage_context_if_fresh(ndjson_path)
+def load_coverage_context_if_fresh(ndjson_path: Path) -> CoverageContext | None:
+    """Returns CoverageContext if tests/bdd/reports/coverage.json
+    exists AND its timestamp is within 1 hour of ndjson's mtime.
+    Otherwise None.
+
+    Module-level (not an Analyzer method) so __main__.py can call it
+    before constructing Analyzer + LlmEvaluator.
+    """
+    import json
+    from datetime import datetime, timedelta, UTC
+
+    coverage_json_path = (
+        ndjson_path.parent.parent.parent / "tests" / "bdd" / "reports" / "coverage.json"
+    )
+    if not coverage_json_path.exists():
+        _LOG.info("No coverage.json found at %s — rendering placeholder", coverage_json_path)
+        return None
+    try:
+        data = json.loads(coverage_json_path.read_text())
+    except (json.JSONDecodeError, OSError) as exc:
+        _LOG.warning("coverage.json parse failed: %s", exc)
+        return None
+    cov_ts_str = data.get("timestamp", "")
+    try:
+        cov_ts = datetime.fromisoformat(cov_ts_str.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    ndjson_mtime = datetime.fromtimestamp(ndjson_path.stat().st_mtime, tz=UTC)
+    if abs((cov_ts - ndjson_mtime).total_seconds()) > timedelta(hours=1).total_seconds():
+        _LOG.warning("coverage.json is stale vs. cucumber.ndjson — ignoring")
+        return None
+    return _build_coverage_context(data)
+
+
+def _build_coverage_context(data: dict) -> CoverageContext:
+    """Module-level helper. Underscore-prefixed (internal to analyzer.py)."""
+    endpoints_summary = tuple(
+        (ep["method"], ep["path"], ep["pct"], ep["tone"])
+        for ep in data.get("endpoints", [])
+    )
+    endpoints_uncovered_flat: dict[str, tuple[dict, ...]] = {
+        f"{ep['method']} {ep['path']}": tuple(ep.get("uncovered_branches_flat", []))
+        for ep in data.get("endpoints", [])
+    }
+    totals = data.get("totals", {})
+    audit = data.get("audit", {})
+    return CoverageContext(
+        timestamp=data.get("timestamp", ""),
+        totals_pct=totals.get("pct", 0.0),
+        totals_tone=totals.get("tone", ""),
+        totals_covered_branches=totals.get("covered_branches", 0),
+        totals_total_branches=totals.get("total_branches", 0),
+        endpoints_summary=endpoints_summary,
+        endpoints_uncovered_flat=endpoints_uncovered_flat,
+        audit_reconciled=audit.get("reconciled", True),
+        audit_unattributed_count=len(audit.get("unattributed_branches", [])),
+    )
+
+
+def build_coverage_summary(ctx: CoverageContext) -> str:
+    """Format a CoverageContext as the human/LLM-readable summary string
+    that gets injected into the cached system prompt. Module-level so
+    __main__.py can call it directly."""
+    lines = [
+        "## Coverage context for this run",
+        "",
+        f"The BDD suite achieved {ctx.totals_pct:.0f}% branch coverage "
+        f"on backend/src/hangman/ "
+        f"({ctx.totals_covered_branches} of {ctx.totals_total_branches} branches).",
+        "",
+        "Per-endpoint uncovered branches (use when emitting D7 findings):",
+    ]
+    for method, path, pct, _tone in ctx.endpoints_summary:
+        key = f"{method} {path}"
+        uncovered = ctx.endpoints_uncovered_flat.get(key, ())
+        if not uncovered:
+            continue
+        lines.append(f"- {method} {path} ({pct:.0f}% covered):")
+        for b in uncovered[:10]:  # cap at 10 per endpoint to keep prompt small
+            lines.append(
+                f"  - {b.get('file', '?')}:{b.get('line', '?')} "
+                f"\"{b.get('condition_text', '?')}\""
+            )
+    lines.append("")
+    lines.append(
+        "When evaluating scenarios, reference this data. If a scenario hits "
+        "an endpoint with uncovered branches, emit a D7 finding only if the "
+        "scenario plausibly could exercise those branches and doesn't."
+    )
+    return "\n".join(lines)
 ```
 
-Then add the method at the end of the `Analyzer` class:
+Then locate the top of `Analyzer.run()` and add:
 
 ```python
-    def _load_coverage_context_if_fresh(
-        self, ndjson_path: Path
-    ) -> CoverageContext | None:
-        """Returns CoverageContext if tests/bdd/reports/coverage.json
-        exists AND its timestamp is within 1 hour of ndjson's mtime.
-        Otherwise None."""
-        import json
-        from datetime import datetime, timedelta, UTC
-
-        coverage_json_path = (
-            ndjson_path.parent.parent.parent / "tests" / "bdd" / "reports" / "coverage.json"
-        )
-        if not coverage_json_path.exists():
-            _LOG.info("No coverage.json found at %s — rendering placeholder", coverage_json_path)
-            return None
-        try:
-            data = json.loads(coverage_json_path.read_text())
-        except (json.JSONDecodeError, OSError) as exc:
-            _LOG.warning("coverage.json parse failed: %s", exc)
-            return None
-        cov_ts_str = data.get("timestamp", "")
-        try:
-            cov_ts = datetime.fromisoformat(cov_ts_str.replace("Z", "+00:00"))
-        except (ValueError, TypeError):
-            return None
-        ndjson_mtime = datetime.fromtimestamp(ndjson_path.stat().st_mtime, tz=UTC)
-        if abs((cov_ts - ndjson_mtime).total_seconds()) > timedelta(hours=1).total_seconds():
-            _LOG.warning("coverage.json is stale vs. cucumber.ndjson — ignoring")
-            return None
-        return self._build_coverage_context(data)
-
-    @staticmethod
-    def _build_coverage_context(data: dict) -> CoverageContext:
-        endpoints_summary = tuple(
-            (ep["method"], ep["path"], ep["pct"], ep["tone"])
-            for ep in data.get("endpoints", [])
-        )
-        endpoints_uncovered_flat: dict[str, tuple[dict, ...]] = {
-            f"{ep['method']} {ep['path']}": tuple(ep.get("uncovered_branches_flat", []))
-            for ep in data.get("endpoints", [])
-        }
-        totals = data.get("totals", {})
-        audit = data.get("audit", {})
-        return CoverageContext(
-            timestamp=data.get("timestamp", ""),
-            totals_pct=totals.get("pct", 0.0),
-            totals_tone=totals.get("tone", ""),
-            totals_covered_branches=totals.get("covered_branches", 0),
-            totals_total_branches=totals.get("total_branches", 0),
-            endpoints_summary=endpoints_summary,
-            endpoints_uncovered_flat=endpoints_uncovered_flat,
-            audit_reconciled=audit.get("reconciled", True),
-            audit_unattributed_count=len(audit.get("unattributed_branches", [])),
-        )
+    coverage_context = load_coverage_context_if_fresh(ndjson_path)
 ```
+
+(no `self.` — calls the module-level function.)
+
+**Note:** `build_coverage_summary` is moved here from G2 (where it was previously documented as a separate piece). G1 owns the function definition; G2 just imports and uses it.
 
 Also add the import at the top of `analyzer.py`:
 
@@ -3503,43 +3579,29 @@ class TestCoverageAugmentation:
         self, tmp_path, fixtures_dir, mock_anthropic_client, good_tool_input
     ) -> None:
         # No coverage.json file present → CoverageContext is None, no crash.
-        # (Use a fresh tmp-based cucumber.ndjson so no real coverage.json
-        # is in reach.)
-        import json
-        from tools.dashboard.analyzer import Analyzer
-        # Analyzer's private _load_coverage_context_if_fresh must return None.
-        # Use a fresh Analyzer instance (the internal method is testable).
-        a = Analyzer(
-            parser=object(),
-            grader=object(),
-            packager=object(),
-            llm=object(),
-            history=object(),
-            renderer=object(),
-        )
-        cov = a._load_coverage_context_if_fresh(tmp_path / "cucumber.ndjson")
+        # Module-level function — no Analyzer instance needed.
+        from tools.dashboard.analyzer import load_coverage_context_if_fresh
+
+        cov = load_coverage_context_if_fresh(tmp_path / "cucumber.ndjson")
         assert cov is None
 
     def test_stale_coverage_json_returns_none(self, tmp_path) -> None:
-        from tools.dashboard.analyzer import Analyzer
+        import json
+        from tools.dashboard.analyzer import load_coverage_context_if_fresh
+
         # Create a coverage.json with a timestamp >1h older than ndjson mtime.
         ndjson = tmp_path / "frontend" / "test-results" / "cucumber.ndjson"
         ndjson.parent.mkdir(parents=True)
         ndjson.write_text("")
         cov_json = tmp_path / "tests" / "bdd" / "reports" / "coverage.json"
         cov_json.parent.mkdir(parents=True)
-        import json
         cov_json.write_text(json.dumps({
             "timestamp": "2020-01-01T00:00:00Z",
             "totals": {"pct": 50.0, "tone": "warning", "covered_branches": 5, "total_branches": 10},
             "endpoints": [],
             "audit": {"reconciled": True, "unattributed_branches": []},
         }))
-        a = Analyzer(
-            parser=object(), grader=object(), packager=object(),
-            llm=object(), history=object(), renderer=object(),
-        )
-        cov = a._load_coverage_context_if_fresh(ndjson)
+        cov = load_coverage_context_if_fresh(ndjson)
         assert cov is None  # too stale
 ```
 
@@ -3755,79 +3817,54 @@ additions with file:line evidence.
 
 This adds ~500 tokens. The rubric stays well above the 4096-token cache floor.
 
-- [ ] **Step 3: Modify `backend/tools/dashboard/analyzer.py` — pass coverage_summary to LlmEvaluator**
+- [ ] **Step 3: Modify `backend/tools/dashboard/__main__.py` — load coverage + pass to LlmEvaluator**
 
-At the top of `run()` (after loading `coverage_context`), build the coverage_summary string and pass to LlmEvaluator. Since LlmEvaluator is constructed outside of `run()` (in `__main__.py`), this requires adding a method to Analyzer that constructs the summary, and passing it as a constructor kwarg from `__main__.py`.
+`load_coverage_context_if_fresh` and `build_coverage_summary` are already defined as module-level functions in `analyzer.py` (per G1 Step 2 — the iter 2 P1 fix). G2 just imports and uses them.
 
-Cleaner: have the Analyzer build the summary and store it as an instance attribute, then `__main__.py` reads it AFTER instantiating `Analyzer`. But that inverts the dependency injection.
-
-Cleanest: `Analyzer.run()` builds the coverage_summary string and passes it to `self.llm` via a setter, OR LlmEvaluator is constructed lazily inside Analyzer.run(). Avoid the latter.
-
-**Approach:** add a `coverage_summary_builder(coverage_context) -> str` pure function in `analyzer.py` (module-level), then have `__main__.py` construct `LlmEvaluator` with an empty `coverage_summary=""`, then have Analyzer set a `self.llm._system` replacement after loading `coverage_context`.
-
-Actually the simplest: `__main__.py` loads coverage.json first, builds the summary, passes to LlmEvaluator. Move the `_load_coverage_context_if_fresh` logic to a module-level function. Let me document this approach:
-
-In `analyzer.py`, make `_load_coverage_context_if_fresh` and `_build_coverage_context` module-level functions:
+Open `backend/tools/dashboard/__main__.py`. Before the existing `Analyzer(...)` construction (~line 80), add:
 
 ```python
-def load_coverage_context_if_fresh(ndjson_path: Path) -> CoverageContext | None:
-    # ... existing logic from the Analyzer method ...
-```
+from tools.dashboard.analyzer import (
+    Analyzer,
+    build_coverage_summary,
+    load_coverage_context_if_fresh,
+)
 
-In `__main__.py`, before building Analyzer:
-
-```python
-from tools.dashboard.analyzer import build_coverage_summary, load_coverage_context_if_fresh
+# ... inside main(), after argparse ...
 
 coverage_context = load_coverage_context_if_fresh(args.ndjson)
 coverage_summary = build_coverage_summary(coverage_context) if coverage_context else ""
 
 analyzer = Analyzer(
-    ...,
+    parser=NdjsonParser(),
+    grader=CoverageGrader(),
+    packager=Packager(),
     llm=LlmEvaluator(
         model=args.model,
         max_workers=args.max_workers,
-        coverage_summary=coverage_summary,
+        coverage_summary=coverage_summary,  # NEW kwarg
     ),
-    ...,
+    history=HistoryStore(),
+    renderer=DashboardRenderer(),
 )
-analyzer.run(..., coverage_context=coverage_context, ...)
+analyzer.run(
+    ndjson_path=args.ndjson,
+    output_path=args.output,
+    history_dir=args.history_dir,
+    features_glob=args.features_dir,
+    coverage_context=coverage_context,  # NEW arg threaded through
+)
 ```
 
-And add a `build_coverage_summary` function in `analyzer.py`:
+Note: `coverage_context` is loaded ONCE here in `__main__.py`. It is passed (a) to `LlmEvaluator` as a derived `coverage_summary` string for the cached system prompt, and (b) to `Analyzer.run()` as a parameter so the renderer can render the new "Code coverage" card. Avoids loading `coverage.json` twice.
 
-```python
-def build_coverage_summary(ctx: CoverageContext) -> str:
-    """Format a CoverageContext as a human/LLM-readable summary string for
-    injection into the cached system prompt."""
-    lines = [
-        "## Coverage context for this run",
-        "",
-        f"The BDD suite achieved {ctx.totals_pct:.0f}% branch coverage "
-        f"on backend/src/hangman/ "
-        f"({ctx.totals_covered_branches} of {ctx.totals_total_branches} branches).",
-        "",
-        "Per-endpoint uncovered branches (use when emitting D7 findings):",
-    ]
-    for method, path, pct, tone in ctx.endpoints_summary:
-        key = f"{method} {path}"
-        uncovered = ctx.endpoints_uncovered_flat.get(key, ())
-        if not uncovered:
-            continue
-        lines.append(f"- {method} {path} ({pct:.0f}% covered):")
-        for b in uncovered[:10]:  # cap at 10 per endpoint to keep prompt small
-            lines.append(
-                f"  - {b.get('file', '?')}:{b.get('line', '?')} "
-                f"\"{b.get('condition_text', '?')}\""
-            )
-    lines.append("")
-    lines.append(
-        "When evaluating scenarios, reference this data. If a scenario hits "
-        "an endpoint with uncovered branches, emit a D7 finding only if the "
-        "scenario plausibly could exercise those branches and doesn't."
-    )
-    return "\n".join(lines)
+Verify after editing:
+
+```bash
+cd backend && uv run python -m tools.dashboard --help
 ```
+
+Expected: argparse help renders without import errors.
 
 - [ ] **Step 4: Modify `test_llm_client.py`**
 
