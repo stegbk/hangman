@@ -33,6 +33,51 @@ Ready for **Feature 3: bdd-branch-coverage** (call graph + per-branch coverage c
 
 ---
 
+## Workflow
+
+> Updated automatically by `/new-feature` and `/fix-bug` commands.
+> The Stop hook reminds you of the current phase on every response.
+> The PreToolUse hook blocks commit/push/PR if quality gates are incomplete.
+> Delete this section when no workflow is active (or set Command to `none`).
+
+| Field     | Value                            |
+| --------- | -------------------------------- |
+| Command   | /new-feature bdd-branch-coverage |
+| Phase     | 3 — Design                       |
+| Next step | `/superpowers:brainstorming`     |
+
+### Checklist
+
+- [x] Worktree created (`.worktrees/bdd-branch-coverage` on feat/bdd-branch-coverage, base bf1b2df)
+- [x] Project state read
+- [x] Plugins verified (superpowers + pr-review-toolkit + prd:discuss/create exercised through Features 1 + 2 this session)
+- [x] PRD created (`docs/prds/bdd-branch-coverage.md` v1.0 — 8 user stories, 9 non-goals, 8 success metrics, 7 open questions for design/research)
+- [x] Research artifact produced (`docs/research/2026-04-24-bdd-branch-coverage.md` — 5 libs, 5 design-changing findings, 8 open risks. Headline: **pyan3 over pycg** (pycg archived 2023; pyan3 revived 2026-02 with 3.10-3.14 support, 91% self-coverage, latest 2.5.0 on 2026-04-21). Resolves PRD Q1 + Q4. Use `coverage run --branch --parallel-mode -m uvicorn` subprocess approach.)
+- [ ] Design guidance loaded (if UI)
+- [ ] Brainstorming complete
+- [ ] Approach comparison filled
+- [ ] Contrarian gate passed (skip | spike | council)
+- [ ] Council verdict (if triggered): [approach chosen]
+- [ ] Plan written
+- [ ] Plan review loop (0 iterations) — iterate until no P0/P1/P2
+- [ ] TDD execution complete
+- [ ] Code review loop (0 iterations) — iterate until no P0/P1/P2
+- [ ] Simplified
+- [ ] Verified (tests/lint/types)
+- [ ] E2E use cases designed (Phase 3.2b)
+- [ ] E2E verified via verify-e2e agent (Phase 5.4)
+- [ ] E2E regression passed (Phase 5.4b)
+- [ ] E2E use cases graduated to tests/e2e/use-cases/ (Phase 6.2b)
+- [ ] E2E specs graduated to tests/e2e/specs/ (Phase 6.2c — if Playwright framework installed)
+- [ ] Learnings documented (if any)
+- [ ] State files updated
+- [ ] Committed and pushed
+- [ ] PR created
+- [ ] PR reviews addressed
+- [ ] Branch finished
+
+---
+
 ## Open Questions
 
 - [Question needing resolution]
