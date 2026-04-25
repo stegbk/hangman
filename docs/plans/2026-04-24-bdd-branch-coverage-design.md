@@ -1151,3 +1151,52 @@ All resolved. 7 PRD open questions resolved via research + brainstorming; 5 plan
 - **pyan3 PyPI:** https://pypi.org/project/pyan3/
 - **FastAPI route enumeration:** https://fastapi.tiangolo.com/reference/apirouter/
 - **Project rules:** `.claude/rules/{principles,workflow,testing,python-style,security}.md`
+
+---
+
+## 14. Plan-Review Pivots (Supersedes earlier sections)
+
+This design spec is the validated approach at design time. The implementation plan-review loop subsequently identified defects in some details and patched them in `docs/plans/2026-04-24-bdd-branch-coverage-plan.md`. **The plan supersedes this document on the items below.** Entries are dated and reference the commit that landed the change.
+
+### 14.1 — Path format for `ReachableBranch.file` and coverage.json
+
+**Iter 4 (commit `f0190f2`, 2026-04-24).**
+
+The example `ReachableBranch.file = "backend/src/hangman/game.py"` (§4.4 line 285) and the example `coverage.json` (§5 lines 688-739) use `backend/src/hangman/...` paths. **The canonical runtime format is `src/hangman/<module>.py`** — no `backend/` prefix, no leading `/`. This is what `coverage.py` produces with `[run] relative_files = true` + `cd backend` (in `scripts/backend-coverage.sh`), matching `Reachability` which emits `source_file.relative_to(source_root.parent.parent)` against an absolute `source_root = /<repo>/backend/src/hangman`.
+
+H1 Step 7b's path-format invariant fail-fast rejects any file with a `backend/` prefix, leading `/`, or anything not starting with `src/hangman/`. Future updates to this design spec should fix the example paths to the canonical form.
+
+### 14.2 — Branch-identity model: source-line granularity, not arc granularity
+
+**Iter 6 (commit `23e7d4a`, 2026-04-24).**
+
+§3.3 (audit reconciliation) describes audit math in terms of `(file, branch_id)` tuples; §4.6 step 4 says "Enumerated (deduped across endpoints): `distinct((file, branch_id) for each branch in any endpoint's reachable set) ∪ distinct(extra_coverage branches)`."
+
+After iter 6, the matching key is `(file, source_line)` — not `(file, branch_id)`. Reasons:
+
+1. **Reachability emits synthetic `f"{line}->{line+1}"` arc IDs from AST** while coverage.py emits real arc IDs from bytecode. Else-arms point to non-consecutive lines; multi-line bodies have non-`line+1` targets; exception arcs target handler lines. Direct equality on the synthetic IDs fails for most real conditionals.
+2. **`Analysis.arc_possibilities()` includes non-branch arcs** (linear flow between consecutive statements). Counting them as "branches" inflates `total_branches_per_file`. The correct API is `Analysis.branch_lines()` which returns only source-lines that ARE branch points.
+
+The plan now:
+
+- Uses `Analysis.branch_lines()` for `total_branches_per_file` (count of source-lines that are branch points per file).
+- Defines a `_arc_source_line(branch_id) -> int` helper in the Grader that extracts the source-line from any arc ID.
+- Projects `hits.hits_by_context[ctx]` and `hits.all_hits` to `(file, source_line)` tuples for matching against `(b.file, b.line)`.
+- Operates audit math on `enumerated_reachable_lines: set[tuple[str, int]]` not `set[tuple[str, str]]`.
+- Derives `extra_coverage` (file-level entries) from the same line-granularity primitive (`enumerated_reachable_lines`) so file entries are reported when any same-file branch is hit but unlinked.
+
+`ReachableBranch.branch_id` is preserved as a display string (used in coverage.json's `uncovered_branches[].branch_id`) but is NOT a comparison key.
+
+### 14.3 — Per-context API for hit sets
+
+**Iter 4 (commit `f0190f2`).**
+
+§4.5 line 478 says `CoverageData.arcs(file, contexts=[label])`. The plan uses exactly this kwarg form via `_arcs_for_context(data, file, ctx)`. Earlier plan drafts used `data.set_query_contexts([label]) + data.arcs(file)` — the global-state mutation form — and were patched out in iter 4 / iter 5.
+
+### 14.4 — Middleware route-template resolution
+
+**Iter 6 (commit `23e7d4a`).**
+
+§12 risk #7 says "`CoverageContextMiddleware._resolve_context` prefers `request.scope["route"].path` (matched route template like `/games/{id}`)." This was wrong: `request.scope["route"]` is populated by Starlette's Router AFTER middleware dispatch, so the middleware always took the concrete-path fallback in production. Every path-param endpoint silently lost attribution.
+
+The plan's middleware now does its own route matching against `request.app.router.routes` via `route.matches(scope)` + `Match.FULL`, reading `route.path` (or `route.path_format`) on match. Tests assert the template, not the concrete path.

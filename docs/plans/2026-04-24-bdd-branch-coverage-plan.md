@@ -2387,6 +2387,67 @@ class TestTotals:
         assert ep_cov.pct == 100.0
         assert report.totals.covered_branches == 1
 
+
+class TestArcSourceLine:
+    # Per plan-review iter 7 P2 (Codex): _arc_source_line's docstring
+    # documents support for negative-target exit arcs ("10->-1") and a
+    # bare-line fallback ("10"); both must be tested directly.
+
+    def test_extracts_source_line_from_normal_arc(self) -> None:
+        from tools.branch_coverage.grader import _arc_source_line
+        assert _arc_source_line("10->11") == 10
+
+    def test_extracts_source_line_from_negative_target_arc(self) -> None:
+        # coverage.py uses negative target lines for function-exit arcs.
+        # _arcs_for_context already filters these out before they reach
+        # the Grader, but _arc_source_line is defensive: even if one
+        # leaks through, the source line extracts cleanly.
+        from tools.branch_coverage.grader import _arc_source_line
+        assert _arc_source_line("42->-1") == 42
+
+    def test_falls_through_on_bare_line_format(self) -> None:
+        # If coverage.py changes its arc-id encoding to a bare line number,
+        # the helper still extracts the source line via int() coercion.
+        from tools.branch_coverage.grader import _arc_source_line
+        assert _arc_source_line("10") == 10
+
+    def test_extra_coverage_includes_intra_file_unlinked_hits(self) -> None:
+        # Per plan-review iter 7 P1 (Codex): if a file has BOTH endpoint-
+        # reachable branches AND separately-hit unlinked branches (e.g.,
+        # via Depends or background tasks), extra_coverage MUST report the
+        # file. The previous file-granularity dedup (`hit_files -
+        # reachable_files`) silently dropped the unlinked branch because
+        # the file appeared in reachable_files.
+        ep = _ep("/a", "hangman.routes.handler_a")
+        # Endpoint reaches line 10 in game.py.
+        reachable_branch = _branch("src/hangman/game.py", 10, "hangman.game.fn_a")
+        reachability = {ep: [reachable_branch]}
+        hits = LoadedCoverage(
+            hits_by_context={"POST /a": frozenset({
+                ("src/hangman/game.py", "10->11"),
+                # ALSO hit: line 99 in the SAME file, but unreachable from
+                # any endpoint via static analysis (e.g., FastAPI Depends).
+                ("src/hangman/game.py", "99->100"),
+            })},
+            total_branches_per_file={"src/hangman/game.py": 2},
+            all_hits=frozenset({
+                ("src/hangman/game.py", "10->11"),
+                ("src/hangman/game.py", "99->100"),
+            }),
+        )
+        report = Grader().grade(reachability, hits)
+        # extra_coverage MUST include game.py (line 99 hit, not reachable),
+        # even though line 10 in the same file IS reachable.
+        extra_files = {ec.file for ec in report.extra_coverage}
+        assert "src/hangman/game.py" in extra_files, (
+            f"Expected game.py in extra_coverage (line 99 unlinked hit), "
+            f"got {extra_files}. The file-granularity bug is back — "
+            f"iter 7 P1 Codex regression."
+        )
+        # Audit also counts it (line 99 is the extra branch).
+        assert report.audit.extra_coverage_branches == 1
+        assert report.audit.reconciled is True
+
     def test_totals_excludes_out_of_scope_hits(self) -> None:
         # Per plan-review iter 4 P1 (Codex): hits in files not in
         # total_branches_per_file (out-of-scope leakage) MUST NOT count
@@ -2508,7 +2569,12 @@ class Grader:
             for b in branches:
                 enumerated_reachable_lines.add((b.file, b.line))
 
-        extra_coverage = self._extra_coverage(reachability, hits)
+        # Per plan-review iter 7 P1 (Codex): extra_coverage MUST be derived
+        # from the same line-granularity primitive as _audit, otherwise
+        # intra-file unlinked hits (e.g., a Depends-injected helper in a
+        # file that ALSO has endpoint-reachable branches) get silently
+        # dropped from extra_coverage even though the audit counts them.
+        extra_coverage = self._extra_coverage(enumerated_reachable_lines, hits)
 
         audit = self._audit(enumerated_reachable_lines, hits)
         totals = self._totals(hits)
@@ -2588,23 +2654,41 @@ class Grader:
 
     def _extra_coverage(
         self,
-        reachability: dict[Endpoint, list[ReachableBranch]],
+        enumerated_reachable_lines: set[tuple[str, int]],
         hits: LoadedCoverage,
     ) -> list[ExtraCoverage]:
-        # Files hit by aggregate coverage but not linked to any endpoint's reachability.
-        reachable_files = set()
-        for branches in reachability.values():
-            for b in branches:
-                reachable_files.add(b.file)
-        hit_files = {f for (f, _bid) in hits.all_hits}
-        extra_files = hit_files - reachable_files
+        """Return one ExtraCoverage entry per file containing at least one
+        branch line that was hit by the BDD suite but NOT linked to any
+        endpoint by static reachability.
+
+        Per plan-review iter 7 P1 (Codex): the previous version used
+        file-granularity (`hit_files - reachable_files`). After iter 6's
+        line-granularity pivot in `_audit`, the file-only check became
+        inconsistent: if `src/hangman/game.py` had endpoint-reachable
+        branches AND a separately-hit unlinked branch (Depends-injected
+        helper, async background callback, etc.), the unlinked hit was
+        invisible to extra_coverage even though `_audit` correctly counted
+        it. Now both consume the same `enumerated_reachable_lines` set and
+        report consistently.
+        """
+        all_hit_lines = {
+            (f, _arc_source_line(bid)) for (f, bid) in hits.all_hits
+        }
+        extra_hit_lines = all_hit_lines - enumerated_reachable_lines
+        # Restrict to in-scope files (defensive — out-of-scope hits don't
+        # appear as extra_coverage; they're separate leakage handled by
+        # _totals' in-scope filter).
+        in_scope_files = set(hits.total_branches_per_file.keys())
+        extra_files = sorted({
+            f for (f, _line) in extra_hit_lines if f in in_scope_files
+        })
         return [
             ExtraCoverage(
                 file=file,
                 qualname=file,  # placeholder; Analyzer can enrich
-                reason="Hit by BDD suite but not linked to any endpoint by static call-graph",
+                reason="One or more branches hit by BDD suite but not linked to any endpoint by static call-graph",
             )
-            for file in sorted(extra_files)
+            for file in extra_files
         ]
 
     def _audit(
@@ -2709,7 +2793,7 @@ class Grader:
 - [ ] **Step 4: Run tests — expect pass**
 
 Run: `cd backend && uv run pytest tests/unit/tools/branch_coverage/test_grader.py -v`
-Expected: all pass (14 tests — 11 original + 2 added in iter 4 + 1 added in iter 6: `test_else_arm_arc_target_still_matches_branch_at_source_line`).
+Expected: all pass (17 method-level tests — 11 original + 2 added in iter 4 (TestExtra/TestTotals) + 1 added in iter 6 (`test_else_arm_arc_target_still_matches_branch_at_source_line`) + 4 added in iter 7 (TestArcSourceLine: 3 helper edge-cases + intra-file extra_coverage regression). Pytest reports more collected items if any tests use `parametrize`.
 
 - [ ] **Step 5: ruff + mypy**
 
