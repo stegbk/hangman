@@ -29,13 +29,26 @@ class Reachability:
     ) -> dict[Endpoint, list[ReachableBranch]]:
         """For each endpoint, BFS the call graph from its handler; for
         each reachable function whose file is under source_root,
-        enumerate branches via AST."""
+        enumerate branches via AST.
+
+        Per /simplify pass: shared helpers reachable from N endpoints
+        are AST-parsed once and cached for the rest of `compute()`.
+        Without the cache, `_branches_for(qualname)` would re-resolve
+        + re-parse the same file once per endpoint that reaches it
+        (O(E × R) work where R = unique reachable qualnames). With
+        the cache, each qualname is resolved once (O(R + E)).
+        """
+        branches_cache: dict[str, list[ReachableBranch]] = {}
         result: dict[Endpoint, list[ReachableBranch]] = {}
         for ep in endpoints:
             reachable_qualnames = self._bfs(ep.handler_qualname, graph)
             branches: list[ReachableBranch] = []
             for qualname in reachable_qualnames:
-                branches.extend(self._branches_for(qualname, source_root))
+                cached = branches_cache.get(qualname)
+                if cached is None:
+                    cached = self._branches_for(qualname, source_root)
+                    branches_cache[qualname] = cached
+                branches.extend(cached)
             result[ep] = branches
         return result
 

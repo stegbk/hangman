@@ -46,11 +46,16 @@ def load_coverage_context_if_fresh(ndjson_path: Path) -> CoverageContext | None:
     coverage_json_path = (
         ndjson_path.parent.parent.parent / "tests" / "bdd" / "reports" / "coverage.json"
     )
-    if not coverage_json_path.exists():
-        _LOG.info("No coverage.json found at %s — rendering placeholder", coverage_json_path)
-        return None
+    # Per /simplify pass: replace `if exists(): read_text()` (TOCTOU
+    # anti-pattern flagged by .claude/rules/principles.md "operate
+    # directly and handle the error") with a single read attempt that
+    # downgrades FileNotFoundError to the same "no coverage augmentation"
+    # path as the other parse failures.
     try:
         data = json.loads(coverage_json_path.read_text())
+    except FileNotFoundError:
+        _LOG.info("No coverage.json found at %s — rendering placeholder", coverage_json_path)
+        return None
     except (json.JSONDecodeError, OSError) as exc:
         _LOG.warning("coverage.json parse failed: %s", exc)
         return None

@@ -331,9 +331,10 @@ class TestArcSourceLine:
 
     def test_extracts_source_line_from_negative_target_arc(self) -> None:
         # coverage.py uses negative target lines for function-exit arcs.
-        # _arcs_for_context already filters these out before they reach
-        # the Grader, but _arc_source_line is defensive: even if one
-        # leaks through, the source line extracts cleanly.
+        # CoverageDataLoader.load already filters these out (`a[1] > 0`)
+        # before they reach the Grader, but _arc_source_line is
+        # defensive: even if one leaks through, the source line extracts
+        # cleanly.
         from tools.branch_coverage.grader import _arc_source_line
 
         assert _arc_source_line("42->-1") == 42

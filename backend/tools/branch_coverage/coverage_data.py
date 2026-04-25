@@ -55,14 +55,41 @@ class CoverageDataLoader:
         # Each arc kept here has its SOURCE LINE in branch_lines_per_file[file],
         # so projecting to (file, source_line) in E1's Grader yields a true
         # branch hit set.
+        #
+        # Per A3 spike (coverage.py 7.13.5): the public per-context query API
+        # is `data.set_query_contexts([label])` + `data.arcs(file)`. The
+        # `data.arcs(file, contexts=[label])` kwarg form documented elsewhere
+        # does NOT exist on 7.13.5 — `arcs(self, filename: str)` is the real
+        # signature. Reset to None in a finally to avoid leaking global state
+        # across context iterations.
+        #
+        # Per plan-review iter 8 P1 (Codex): filter arcs by their SOURCE
+        # LINE membership in `branch_lines_per_file[file]` — the authoritative
+        # set of branch points (from `Analysis.branch_stats().keys()`).
+        # Without this filter, linear-flow arcs (e.g., from `a = 1\nb = 2`)
+        # slip into the hit set and the Grader's source-line projection
+        # mistakes them for branch hits. Also drop exit arcs (negative
+        # target line); the Reachability AST walker doesn't emit them either.
+        #
+        # Per /simplify pass: lift `set_query_contexts` out of the per-file
+        # loop — once per context (O(C)) instead of per (file, context)
+        # (O(F·C)). The filter applies to all `arcs(file)` calls until
+        # reset, so doing it once per context is correct AND clearer about
+        # the API contract.
         hits_by_context: dict[str, frozenset[tuple[str, str]]] = {}
         for ctx in contexts:
-            hits: set[tuple[str, str]] = set()
-            for file in measured_files:
-                bl = branch_lines_per_file[file]
-                for arc in self._arcs_for_context(data, file, ctx, bl):
-                    hits.add((file, self._arc_to_id(arc)))
-            hits_by_context[ctx] = frozenset(hits)
+            try:
+                data.set_query_contexts([ctx if ctx else ""])
+                hits: set[tuple[str, str]] = set()
+                for file in measured_files:
+                    bl = branch_lines_per_file[file]
+                    arcs = data.arcs(file) or []
+                    for a in arcs:
+                        if a[1] > 0 and a[0] in bl:
+                            hits.add((file, self._arc_to_id(a)))
+                hits_by_context[ctx] = frozenset(hits)
+            finally:
+                data.set_query_contexts(None)
 
         # Aggregate hits (union across all contexts)
         all_hits_set: set[tuple[str, str]] = set()
@@ -87,51 +114,6 @@ class CoverageDataLoader:
     @staticmethod
     def _arc_to_id(arc: tuple[int, int]) -> str:
         return f"{arc[0]}->{arc[1]}"
-
-    @staticmethod
-    def _arcs_for_context(
-        data: Any,
-        file: str,
-        context: str,
-        branch_lines: set[int],
-    ) -> list[tuple[int, int]]:
-        """Fetch arcs hit under a specific context, filtered to branch arcs only.
-
-        Per A3 spike (2026-04-24, coverage.py 7.13.5): the design's
-        original `data.arcs(file, contexts=[label])` kwarg form does NOT
-        exist on `CoverageData.arcs` — its real signature is
-        `arcs(self, filename: str)`. Plan-review iter 4 patched the plan
-        AWAY from `set_query_contexts` toward the kwarg form on the
-        assumption (from a context7 doc snippet) that the kwarg was
-        public; the spike falsified that assumption. The canonical public
-        per-context query API on coverage.py 7.x is
-        `data.set_query_contexts([label])` + `data.arcs(file)`, with a
-        `try/finally: data.set_query_contexts(None)` reset so we don't
-        leak global state to the next call.
-
-        Per plan-review iter 8 P1 (Codex): filter arcs by their SOURCE
-        LINE membership in `branch_lines` — the authoritative set of
-        branch points in this file (from `set(Analysis.branch_stats().keys())`).
-        Without this filter, linear-flow arcs (e.g., from `a = 1\nb = 2`)
-        slip into the per-context hit set and the Grader's source-line
-        projection mistakes them for branch hits.
-
-        Also filter out exit arcs (negative target line) since those are
-        not user-visible branches and the Reachability AST walker does
-        not emit them either.
-
-        Empty-string context matches hits that arrived without a tag
-        (startup, shutdown, background tasks).
-        """
-        query_label = context if context else ""
-        try:
-            data.set_query_contexts([query_label])
-            arcs = data.arcs(file) or []
-        finally:
-            # Reset so no other caller (or our own next iteration) inherits
-            # the per-context filter. None == "all contexts".
-            data.set_query_contexts(None)
-        return [a for a in arcs if a[1] > 0 and a[0] in branch_lines]
 
     @staticmethod
     def _authoritative_branch_lines(cov: Any, data: Any, file: str) -> set[int]:

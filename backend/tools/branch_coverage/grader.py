@@ -11,6 +11,7 @@ reachable from N endpoints is counted ONCE in the audit enumeration
 from __future__ import annotations
 
 from collections import defaultdict
+from datetime import UTC, datetime
 
 from tools.branch_coverage.models import (
     AuditReport,
@@ -71,28 +72,32 @@ class Grader:
         ]
         endpoints_cov.sort(key=lambda c: (c.endpoint.path, c.endpoint.method))
 
-        # Deduped reachable enumeration as (file, source_line) tuples
+        # Per /simplify pass: compute the three line-granularity primitives
+        # ONCE here and pass them into _extra_coverage / _audit / _totals.
+        # Previously each helper rebuilt `all_hit_lines` independently,
+        # diverging on whether to filter to in-scope files (a real bug
+        # that iter 9 P1 already had to fix once). One source of truth.
+        #
+        # `enumerated_reachable_lines` is deduped (file, source_line)
         # across all endpoints. Per iter 6 P1: line-granularity matches
-        # both coverage.py's `branch_lines()` semantics and the per-
-        # endpoint intersection in `_grade_endpoint`. Multiple
-        # ReachableBranches at the same (file, line) collapse to one entry
-        # — that's correct because Reachability emits one branch per
-        # conditional and coverage.py counts one branch-line per
-        # conditional.
-        enumerated_reachable_lines: set[tuple[str, int]] = set()
-        for branches in reachability.values():
-            for b in branches:
-                enumerated_reachable_lines.add((b.file, b.line))
+        # both coverage.py's branch_lines() semantics and the per-endpoint
+        # intersection in _grade_endpoint. Multiple ReachableBranches at
+        # the same (file, line) collapse to one entry — correct because
+        # Reachability emits one branch per conditional and coverage.py
+        # counts one branch-line per conditional.
+        enumerated_reachable_lines: set[tuple[str, int]] = {
+            (b.file, b.line) for branches in reachability.values() for b in branches
+        }
+        in_scope_files = set(hits.total_branches_per_file.keys())
+        all_hit_lines_in_scope: set[tuple[str, int]] = {
+            (f, _arc_source_line(bid)) for (f, bid) in hits.all_hits if f in in_scope_files
+        }
 
-        # Per plan-review iter 7 P1 (Codex): extra_coverage MUST be derived
-        # from the same line-granularity primitive as _audit, otherwise
-        # intra-file unlinked hits (e.g., a Depends-injected helper in a
-        # file that ALSO has endpoint-reachable branches) get silently
-        # dropped from extra_coverage even though the audit counts them.
-        extra_coverage = self._extra_coverage(enumerated_reachable_lines, hits)
-
-        audit = self._audit(enumerated_reachable_lines, hits)
-        totals = self._totals(hits)
+        extra_coverage = self._extra_coverage(enumerated_reachable_lines, all_hit_lines_in_scope)
+        audit = self._audit(
+            enumerated_reachable_lines, all_hit_lines_in_scope, hits.total_branches_per_file
+        )
+        totals = self._totals(hits.total_branches_per_file, all_hit_lines_in_scope)
 
         return CoverageReport(
             version=1,
@@ -163,32 +168,22 @@ class Grader:
             uncovered_branches=uncovered,
         )
 
+    @staticmethod
     def _extra_coverage(
-        self,
         enumerated_reachable_lines: set[tuple[str, int]],
-        hits: LoadedCoverage,
+        all_hit_lines_in_scope: set[tuple[str, int]],
     ) -> list[ExtraCoverage]:
         """Return one ExtraCoverage entry per file containing at least one
         branch line that was hit by the BDD suite but NOT linked to any
         endpoint by static reachability.
 
-        Per plan-review iter 7 P1 (Codex): the previous version used
-        file-granularity (`hit_files - reachable_files`). After iter 6's
-        line-granularity pivot in `_audit`, the file-only check became
-        inconsistent: if `src/hangman/game.py` had endpoint-reachable
-        branches AND a separately-hit unlinked branch (Depends-injected
-        helper, async background callback, etc.), the unlinked hit was
-        invisible to extra_coverage even though `_audit` correctly counted
-        it. Now both consume the same `enumerated_reachable_lines` set and
-        report consistently.
+        Per plan-review iter 7 P1 (Codex): derive from the same
+        line-granularity primitive as _audit (caller passes
+        `all_hit_lines_in_scope`) so intra-file unlinked hits are reported
+        consistently.
         """
-        all_hit_lines = {(f, _arc_source_line(bid)) for (f, bid) in hits.all_hits}
-        extra_hit_lines = all_hit_lines - enumerated_reachable_lines
-        # Restrict to in-scope files (defensive — out-of-scope hits don't
-        # appear as extra_coverage; they're separate leakage handled by
-        # _totals' in-scope filter).
-        in_scope_files = set(hits.total_branches_per_file.keys())
-        extra_files = sorted({f for (f, _line) in extra_hit_lines if f in in_scope_files})
+        extra_hit_lines = all_hit_lines_in_scope - enumerated_reachable_lines
+        extra_files = sorted({f for (f, _line) in extra_hit_lines})
         return [
             ExtraCoverage(
                 file=file,
@@ -198,69 +193,44 @@ class Grader:
             for file in extra_files
         ]
 
+    @staticmethod
     def _audit(
-        self,
         enumerated_reachable_lines: set[tuple[str, int]],
-        hits: LoadedCoverage,
+        all_hit_lines_in_scope: set[tuple[str, int]],
+        total_branches_per_file: dict[str, int],
     ) -> AuditReport:
-        """Per plan-review iter 4 P1 (Codex) + iter 6 P1 (Codex) + design
-        spec §4.6 step 4: audit enumeration is `reachable_lines ∪
-        distinct(extra hit source-lines)`, both keyed at source-line
-        granularity (not arc granularity).
+        """Per plan-review iter 4 P1 + iter 6 P1 + iter 9 P1 (Codex):
+        audit enumeration is R ∪ E where R is static reachability and E
+        is hit-but-unlinked, all at line-granularity, all in-scope.
 
-        - R = enumerated_reachable_lines (deduped (file, src_line) across
-              endpoints, from static graph)
-        - E = projected_all_hits − R (source-lines hit by the BDD suite
-              that the static graph did not link — typically shared helpers
-              reached via untagged contexts, or callsites pyan3 missed)
-        - Audit invariant: per file, `auth_branch_lines = R_in_file +
-          E_in_file + unattributed_in_file`. `reconciled = True` iff this
-          invariant holds across every in-scope file.
+        Audit invariant: per file, auth = R_in_file + E_in_file +
+        unattributed_in_file. reconciled=True iff the invariant holds.
 
-        See `_arc_source_line` for why we project to source-line tuples.
+        Caller (`grade()`) precomputes `all_hit_lines_in_scope` once for
+        all three helpers — see /simplify pass note in `grade()`.
         """
-        # Project all hits to source-line tuples, then immediately restrict
-        # to in-scope files (keys of `total_branches_per_file`). Per
-        # plan-review iter 9 P1 (Codex): the previous version filtered
-        # out-of-scope hits when counting `per_file_enumerated` but NOT
-        # when computing `extra_coverage_branches` — so any leakage
-        # through coverage.py's source filter would inflate
-        # `extra_coverage_branches` while leaving the rest of the audit
-        # in-scope-only. Filter once, here, so all downstream audit
-        # numbers (`extra_coverage_branches`, `per_file_enumerated`,
-        # `unattributed_branches`) operate on the same scope as
-        # `total_authoritative`.
-        in_scope_files = set(hits.total_branches_per_file.keys())
-        all_hit_lines = {
-            (f, _arc_source_line(bid)) for (f, bid) in hits.all_hits if f in in_scope_files
-        }
-        extra_hit_lines = all_hit_lines - enumerated_reachable_lines
+        extra_hit_lines = all_hit_lines_in_scope - enumerated_reachable_lines
         enumerated_total = enumerated_reachable_lines | extra_hit_lines
 
-        per_file_enumerated: dict[str, int] = {f: 0 for f in hits.total_branches_per_file}
+        per_file_enumerated: dict[str, int] = dict.fromkeys(total_branches_per_file, 0)
         for f, _line in enumerated_total:
             if f in per_file_enumerated:
                 per_file_enumerated[f] += 1
-        # The `if f in per_file_enumerated` is now redundant given the
-        # in-scope filter on all_hit_lines + the in-scope filter on
-        # enumerated_reachable_lines (which derives from Reachability,
-        # itself bounded by source_root). Kept as belt-and-suspenders.
 
         unattributed: list[UnattributedBranch] = []
-        for file, auth_count in hits.total_branches_per_file.items():
+        for file, auth_count in total_branches_per_file.items():
             delta = auth_count - per_file_enumerated[file]
-            if delta > 0:
-                for i in range(delta):
-                    unattributed.append(
-                        UnattributedBranch(
-                            file=file,
-                            line=-1,
-                            branch_id=f"unknown_{i}",
-                            reason="coverage.py reports branch in file; neither static graph nor BDD hits identified it",
-                        )
+            for i in range(max(0, delta)):
+                unattributed.append(
+                    UnattributedBranch(
+                        file=file,
+                        line=-1,
+                        branch_id=f"unknown_{i}",
+                        reason="coverage.py reports branch in file; neither static graph nor BDD hits identified it",
                     )
+                )
 
-        total_authoritative = sum(hits.total_branches_per_file.values())
+        total_authoritative = sum(total_branches_per_file.values())
         reconciled = sum(per_file_enumerated.values()) + len(unattributed) == total_authoritative
         return AuditReport(
             total_branches_per_coverage_py=total_authoritative,
@@ -270,22 +240,17 @@ class Grader:
             reconciled=reconciled,
         )
 
-    def _totals(self, hits: LoadedCoverage) -> Totals:
-        """Per plan-review iter 4 P1 + iter 6 P1 (Codex) + design spec
-        §4.6 step 5: project all_hits to (file, source_line) tuples,
-        intersect with in-scope files (keys of `total_branches_per_file`),
-        deduplicate, then count.
-
-        Source-line projection matches `_grade_endpoint` and `_audit` so
-        the totals are internally consistent with per-endpoint and audit
-        numbers. Two arcs from the same source line (e.g., if-arm and
-        else-arm) collapse to one branch-line, matching coverage.py's
-        `branch_lines()` semantics.
+    @staticmethod
+    def _totals(
+        total_branches_per_file: dict[str, int],
+        all_hit_lines_in_scope: set[tuple[str, int]],
+    ) -> Totals:
+        """Per plan-review iter 4 P1 + iter 6 P1 (Codex): covered =
+        |all_hits ∩ in-scope branch source-lines|. Caller precomputes
+        the in-scope projection once for all three helpers.
         """
-        total = sum(hits.total_branches_per_file.values())
-        in_scope_files = set(hits.total_branches_per_file.keys())
-        all_hit_lines = {(f, _arc_source_line(bid)) for (f, bid) in hits.all_hits}
-        covered = sum(1 for (f, _line) in all_hit_lines if f in in_scope_files)
+        total = sum(total_branches_per_file.values())
+        covered = len(all_hit_lines_in_scope)
         pct = (covered / total * 100) if total else 0.0
         return Totals(
             total_branches=total,
@@ -296,6 +261,4 @@ class Grader:
 
     @staticmethod
     def _timestamp() -> str:
-        from datetime import UTC, datetime
-
         return datetime.now(tz=UTC).isoformat().replace("+00:00", "Z")
