@@ -40,11 +40,11 @@ Ready for **Feature 3: bdd-branch-coverage** (call graph + per-branch coverage c
 > The PreToolUse hook blocks commit/push/PR if quality gates are incomplete.
 > Delete this section when no workflow is active (or set Command to `none`).
 
-| Field     | Value                            |
-| --------- | -------------------------------- |
-| Command   | /new-feature bdd-branch-coverage |
-| Phase     | 3 — Design (plan review)         |
-| Next step | Phase 3.3 plan review loop       |
+| Field     | Value                                                                       |
+| --------- | --------------------------------------------------------------------------- |
+| Command   | /new-feature bdd-branch-coverage                                            |
+| Phase     | 4 — Execute (TDD via subagent-driven-development)                           |
+| Next step | Phase 4.0 dispatch plan check → Phase 4.1 dispatch first wave (A1→A2→A3→B1) |
 
 ### Checklist
 
@@ -59,7 +59,7 @@ Ready for **Feature 3: bdd-branch-coverage** (call graph + per-branch coverage c
 - [x] Contrarian gate passed (Codex VALIDATE — narrow-scope prompt returned clean with 4 flags; 2 already addressed, 2 new P1/P2 patched inline in commit `75a7708`: audit dedup across endpoints + switch pyan3 from subprocess+DOT to Python API via CallGraphVisitor)
 - [ ] Council verdict (if triggered): [approach chosen]
 - [x] Plan written (`docs/plans/2026-04-24-bdd-branch-coverage-plan.md` — 16 tasks across 8 phases, ~3950 lines after formatter, dispatch plan with 3 parallel waves after scaffold, self-review pass with 6 highest-risk areas flagged for plan-review loop)
-- [ ] Plan review loop (15 iterations) — Iter 1-14: see prior commits. Iter 15 (Claude CLEAN, Codex 1 P2): G1's documented `tools.dashboard.analyzer.Analyzer.run` signature said `features_glob: str = "frontend/tests/bdd/features/**/*.feature"` but the existing implementation has `features_glob: Path` (a directory) — `_warn_on_orphans` calls `.is_dir()` and `.rglob("*.feature")` on it. If implemented literally, defaulted call sites would crash on `str.is_dir`. Patched G1's documented signature to `features_glob: Path` (no default, matches reality) and refreshed type-consistency entry with the correct types + a note that `features_glob` is a directory Path. G2 call site at `__main__.py` was already correct (passes `args.features_dir` Path). Iter 16 next.
+- [x] Plan review loop (16 iterations) — **PASSED at iter 16: Claude CLEAN + Codex CLEAN on same pass.** Total: ~30 P1s + ~25 P2s patched across 16 iterations. Major findings included: source-line vs arc-id matching pivot (iter 6); audit math + extra_coverage line-granularity consistency (iter 4-7); D1 middleware route-matching via `request.app.router.routes` (iter 6); D3 branch-line filtering at loader (iter 8); H1 Step 7b path-format invariant + positive/negative attribution checks (iter 5, 8); 5 codebase-grounding fixes (iters 10-11, 15) replacing fictitious symbols (`hangman.routes.create_game`, `new_game`, `_by_category`, `/forfeit` route, `features_glob: str`) with real ones (`start_game`, `WordPool.random_word`, `self.categories`, `features_glob: Path`); design spec §14 supersedes appendix (iter 7).
 - [ ] TDD execution complete
 - [ ] Code review loop (0 iterations) — iterate until no P0/P1/P2
 - [ ] Simplified
