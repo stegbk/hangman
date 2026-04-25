@@ -2499,9 +2499,11 @@ class TestArcSourceLine:
 
     Note: the iter-6 BEHAVIORAL fix (line-granularity matching across
     Reachability and coverage.py) is regression-tested by
-    `test_else_arm_arc_target_still_matches_branch_at_source_line` in
-    `TestPerEndpointIntersection` above. These tests are about the
-    helper's own contract, not the line-granularity pivot.
+    `test_else_arm_arc_target_still_matches_branch_at_source_line`,
+    which lives in `TestTotals` above (it asserts both the per-endpoint
+    intersection AND the totals projection through one fixture). These
+    helper-contract tests are forward-looking guards, distinct from
+    that behavioral fix.
     """
 
     def test_extracts_source_line_from_normal_arc(self) -> None:
@@ -2823,11 +2825,22 @@ class Grader:
 
         See `_arc_source_line` for why we project to source-line tuples.
         """
-        # Project all hits to source-line tuples. Only count source-lines
-        # that are in scope; out-of-scope leakage is filtered defensively
-        # by the `if f in per_file_enumerated` check below.
+        # Project all hits to source-line tuples, then immediately restrict
+        # to in-scope files (keys of `total_branches_per_file`). Per
+        # plan-review iter 9 P1 (Codex): the previous version filtered
+        # out-of-scope hits when counting `per_file_enumerated` but NOT
+        # when computing `extra_coverage_branches` — so any leakage
+        # through coverage.py's source filter would inflate
+        # `extra_coverage_branches` while leaving the rest of the audit
+        # in-scope-only. Filter once, here, so all downstream audit
+        # numbers (`extra_coverage_branches`, `per_file_enumerated`,
+        # `unattributed_branches`) operate on the same scope as
+        # `total_authoritative`.
+        in_scope_files = set(hits.total_branches_per_file.keys())
         all_hit_lines = {
-            (f, _arc_source_line(bid)) for (f, bid) in hits.all_hits
+            (f, _arc_source_line(bid))
+            for (f, bid) in hits.all_hits
+            if f in in_scope_files
         }
         extra_hit_lines = all_hit_lines - enumerated_reachable_lines
         enumerated_total = enumerated_reachable_lines | extra_hit_lines
@@ -2836,9 +2849,10 @@ class Grader:
         for (f, _line) in enumerated_total:
             if f in per_file_enumerated:
                 per_file_enumerated[f] += 1
-        # Lines in files NOT in total_branches_per_file are out-of-scope
-        # (coverage.py's `source = src/hangman` config should prevent this;
-        # the filter above is defensive).
+        # The `if f in per_file_enumerated` is now redundant given the
+        # in-scope filter on all_hit_lines + the in-scope filter on
+        # enumerated_reachable_lines (which derives from Reachability,
+        # itself bounded by source_root). Kept as belt-and-suspenders.
 
         unattributed: list[UnattributedBranch] = []
         for file, auth_count in hits.total_branches_per_file.items():
@@ -2904,7 +2918,7 @@ class Grader:
 - [ ] **Step 4: Run tests — expect pass**
 
 Run: `cd backend && uv run pytest tests/unit/tools/branch_coverage/test_grader.py -v`
-Expected: all pass (17 method-level tests — 11 original + 2 added in iter 4 (TestExtra/TestTotals) + 1 added in iter 6 (`test_else_arm_arc_target_still_matches_branch_at_source_line`) + 4 added in iter 7 (TestArcSourceLine: 3 helper edge-cases + intra-file extra_coverage regression). Pytest reports more collected items if any tests use `parametrize`.
+Expected: all pass (17 method-level tests across 5 classes: TestPerEndpointIntersection 4, TestSharedHelperCorrectness 2, TestAuditReconciliation 4, TestTotals 2 (incl. `test_else_arm_arc_target_still_matches_branch_at_source_line` from iter 6), TestArcSourceLine 5 (3 helper edge-cases + 1 intra-file extra_coverage regression + 1 totals-excludes-out-of-scope). `test_threshold_resolution` uses parametrize so pytest reports collected count > 17.
 
 - [ ] **Step 5: ruff + mypy**
 
