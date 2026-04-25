@@ -229,6 +229,60 @@ class TestCoverageAugmentation:
             for rec in caplog.records  # type: ignore[attr-defined]
         )
 
+    def test_string_reconciled_returns_none_context(self, tmp_path: Path, caplog: object) -> None:
+        """Per Phase 5 code-review iter 3 P2 (Codex): the iter-2 fix used
+        `bool(audit.get("reconciled", True))`, but `bool("false")` is True
+        (non-empty string is truthy). A coverage.json with
+        `"reconciled": "false"` would build a CoverageContext with
+        audit_reconciled=True, suppressing the audit-failed warning in
+        the renderer.
+
+        Fix: `_strict_bool` raises ValueError on non-bool, downgraded to
+        None + warning. This test asserts a string `"false"` is rejected.
+        """
+        import json
+        import logging
+        from datetime import UTC, datetime
+
+        from tools.dashboard.analyzer import load_coverage_context_if_fresh
+
+        ndjson = tmp_path / "frontend" / "test-results" / "cucumber.ndjson"
+        ndjson.parent.mkdir(parents=True)
+        ndjson.write_text("")
+        cov_json = tmp_path / "tests" / "bdd" / "reports" / "coverage.json"
+        cov_json.parent.mkdir(parents=True)
+        cov_ts = datetime.fromtimestamp(ndjson.stat().st_mtime, tz=UTC).isoformat()
+        cov_json.write_text(
+            json.dumps(
+                {
+                    "timestamp": cov_ts,
+                    "totals": {
+                        "pct": 50.0,
+                        "tone": "warning",
+                        "covered_branches": 5,
+                        "total_branches": 10,
+                    },
+                    "endpoints": [],
+                    # `reconciled` is a string "false" — `bool("false")` is True
+                    # (a real bug if not strictly type-checked).
+                    "audit": {"reconciled": "false", "unattributed_branches": []},
+                }
+            )
+        )
+
+        with caplog.at_level(logging.WARNING):  # type: ignore[attr-defined]
+            cov = load_coverage_context_if_fresh(ndjson)
+
+        assert cov is None, (
+            "Expected None when audit.reconciled is a string 'false' — "
+            "got a CoverageContext that would suppress the audit-failed "
+            "warning. _strict_bool must reject non-bool inputs."
+        )
+        assert any(
+            "schema mismatch" in rec.message
+            for rec in caplog.records  # type: ignore[attr-defined]
+        )
+
     def test_fresh_coverage_json_returns_context(self, tmp_path: Path) -> None:
         import json
         from datetime import UTC, datetime

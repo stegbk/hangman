@@ -67,12 +67,24 @@ def load_coverage_context_if_fresh(ndjson_path: Path) -> CoverageContext | None:
     return _build_coverage_context(data)
 
 
+def _strict_bool(value: object) -> bool:
+    """Per Phase 5 iter 3 P2 (Codex): accept only native bool. The naïve
+    `bool(x)` treats `"false"` and `"0"` as truthy, which would silently
+    suppress the audit-failed warning when coverage.json was hand-edited
+    or carried an older schema. Raise ValueError on non-bool — the caller
+    catches it and downgrades to None + schema-mismatch warning.
+    """
+    if isinstance(value, bool):
+        return value
+    raise ValueError(f"expected bool, got {type(value).__name__}: {value!r}")
+
+
 def _build_coverage_context(data: dict[str, Any]) -> CoverageContext | None:
     """Module-level helper. Underscore-prefixed (internal to analyzer.py).
 
     Returns None if ``data`` does not match the expected coverage.json
-    schema (KeyError/TypeError on missing or wrong-typed fields). The
-    caller treats None as "no coverage augmentation this run" and the
+    schema (KeyError/TypeError/ValueError on missing or wrong-typed fields).
+    The caller treats None as "no coverage augmentation this run" and the
     dashboard renders without the coverage card. This keeps the
     dashboard robust against partial, hand-edited, or
     older-schema coverage.json artifacts.
@@ -107,7 +119,7 @@ def _build_coverage_context(data: dict[str, Any]) -> CoverageContext | None:
             totals_total_branches=int(totals.get("total_branches", 0)),
             endpoints_summary=endpoints_summary,
             endpoints_uncovered_flat=endpoints_uncovered_flat,
-            audit_reconciled=bool(audit.get("reconciled", True)),
+            audit_reconciled=_strict_bool(audit.get("reconciled", True)),
             audit_unattributed_count=len(audit.get("unattributed_branches", [])),
         )
     except (KeyError, TypeError, AttributeError, ValueError) as exc:
