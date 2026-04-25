@@ -228,10 +228,22 @@ parallel = true
 sigterm = true
 concurrency = thread
 source = src/hangman
+# Per plan-review iter 4 P1 (Claude): align coverage.py's path format with
+# Reachability's path computation. With `cd backend` in backend-coverage.sh
+# below, `relative_files = true` makes measured_files() return
+# `src/hangman/game.py` (relative to backend/, the CWD at coverage-run time).
+# Reachability also emits `src/hangman/game.py` (via
+# source_file.relative_to(source_root.parent.parent) where source_root is the
+# absolute path to backend/src/hangman/). Both sides agree → audit math works.
+# Without this flag, measured_files() returns absolute paths and every
+# endpoint reports 0% / audit fails on every real run.
+relative_files = true
 
 [report]
 show_missing = true
 ```
+
+**Path-format invariant (verify in H1 Step 7b):** for a real BDD run, every key in `LoadedCoverage.total_branches_per_file` matches the format `src/hangman/<module>.py` (no leading `/`, no `backend/` prefix). H1's per-endpoint attribution check explicitly asserts this — if any key is absolute or has a different prefix, the run fails before json/html are emitted.
 
 - [ ] **Step 3: Write `scripts/backend-coverage.sh`** (executable)
 
@@ -1879,53 +1891,62 @@ class CoverageDataLoader:
     def _arcs_for_context(data, file: str, context: str) -> list[tuple[int, int]]:
         """Fetch arcs hit under a specific context.
 
-        Uses CoverageData.set_query_contexts() (7.x API) to scope the
-        next arcs() call. Resets to None afterwards.
+        Per plan-review iter 4 P1 (Codex) + design spec §4.5 line 478:
+        use the public per-context kwarg `CoverageData.arcs(file, contexts=[label])`
+        rather than `set_query_contexts([label]) + arcs(file)`. Both are
+        public in coverage.py 7.x; the kwarg form is what the design specifies
+        and avoids the global-state side effect of set_query_contexts.
+
+        Empty-string context matches hits that arrived without a tag
+        (startup, shutdown, background tasks).
         """
-        try:
-            data.set_query_contexts([context] if context else [""])
-            arcs = data.arcs(file) or []
-            return [a for a in arcs if a[1] > 0]  # filter out exit arcs (negative targets)
-        finally:
-            try:
-                data.set_query_contexts(None)
-            except Exception:  # noqa: BLE001
-                pass
+        contexts = [context] if context else [""]
+        arcs = data.arcs(file, contexts=contexts) or []
+        return [a for a in arcs if a[1] > 0]  # filter exit arcs (negative target lines)
 
     @staticmethod
     def _authoritative_branches(cov, data, file: str) -> list[tuple[int, int]]:
         """Enumerate branch arcs that EXIST in the file (independent of
-        whether they were hit), using coverage.py's PUBLIC analysis2
+        whether they were hit), using coverage.py's PUBLIC `analysis2()`
         API.
 
-        analysis2(file) returns a NamedTuple-like:
-          (filename, executable, excluded, missing, missing_formatted)
-        For branch coverage, we need the BRANCH arcs the file contains.
-        coverage.py 7.x exposes branch arcs via Analysis.branch_lines()
-        when --branch is set; this is part of the documented public
-        Analysis class returned by Coverage.analysis2() in 7.13.
+        Per plan-review iter 4 P1 (Codex): in coverage.py 7.x,
+        `Coverage.analysis2(file)` returns an `Analysis` *object* (with
+        methods like `arc_possibilities()`), NOT a 5-tuple. The 5-tuple
+        shape `(filename, executable, excluded, missing, missing_formatted)`
+        was the deprecated `Coverage.analysis()` legacy form — that is not
+        what we call here. The A3 spike (Phase A) characterizes the actual
+        return shape on the installed coverage.py before C2/D3 run, so any
+        signature drift is caught upfront.
 
-        If the public API shape changes, we hard-fail with a specific
-        error rather than silently returning lossy data — per plan-review
-        iter 1 P1.
+        The design spec §4.5 line 479 calls out `coverage.Analyzer` /
+        `Analysis` as the authoritative-total source; `analysis2()` is the
+        7.x entry-point that returns it. `arc_possibilities()` returns all
+        arc tuples that could execute (including branch arcs). We filter
+        exit arcs (negative target line) since those are not user-visible
+        branches and the Reachability AST walker does not emit them either.
+
+        Hard-fail if the public API has shifted between A3 and D3 (rather
+        than silently returning lossy data — per plan-review iter 1 P1).
         """
         try:
-            # analysis2 is the public method on Coverage 7.x.
             analysis = cov.analysis2(file)
-            # Coverage 7.x: Analysis exposes `arc_possibilities()`
-            # (returns all arc tuples that could execute, including branch
-            # arcs). Use that as the authoritative set; filter exit arcs
-            # (negative target lines).
-            possible = analysis.arc_possibilities() if hasattr(analysis, "arc_possibilities") else []
-            return [a for a in possible if a[1] > 0]
         except (AttributeError, TypeError) as exc:
             raise CoverageDataLoadError(
-                f"Coverage.analysis2('{file}') is not available or returned "
-                f"an unexpected shape — coverage.py public API may have "
-                f"shifted: {exc}. The A3 spike should have caught this; "
-                f"re-run the spike or pin coverage.py to a known-good "
-                f"version."
+                f"Coverage.analysis2('{file}') is not available — "
+                f"coverage.py public API may have shifted: {exc}. The A3 "
+                f"spike should have caught this; re-run the spike or pin "
+                f"coverage.py to a known-good version."
             ) from exc
+        if not hasattr(analysis, "arc_possibilities"):
+            raise CoverageDataLoadError(
+                f"Coverage.analysis2('{file}') returned shape lacking "
+                f"`arc_possibilities()` (got {type(analysis).__name__}); "
+                f"coverage.py public API has shifted between A3 spike and "
+                f"this run. Re-run the spike to characterize the new shape."
+            )
+        possible = analysis.arc_possibilities()
+        return [a for a in possible if a[1] > 0]
 ```
 
 - [ ] **Step 4: Run tests — expect pass**
@@ -2181,6 +2202,32 @@ class TestAuditReconciliation:
         assert report.audit.reconciled is True
         assert report.audit.total_branches_enumerated_via_reachability == 1
 
+    def test_extra_branch_hits_count_in_audit_enumeration(self) -> None:
+        # Per plan-review iter 4 P1 (Codex): branches HIT by the BDD suite
+        # but NOT linked to any endpoint via static reachability MUST count
+        # toward the audit enumeration (E set), not be left as
+        # `extra_count = 0`. This is the common shared-helper case where
+        # pyan3 missed a callsite but coverage.py still saw the hit.
+        ep = _ep("/a", "hangman.routes.handler_a")
+        reachability = {ep: [_branch("hangman/a.py", 10, "hangman.a.fn")]}
+        hits = LoadedCoverage(
+            hits_by_context={"POST /a": frozenset({
+                ("hangman/a.py", "10->11"),
+                ("hangman/utils.py", "5->6"),  # hit via untagged context
+            })},
+            total_branches_per_file={"hangman/a.py": 1, "hangman/utils.py": 1},
+            all_hits=frozenset({
+                ("hangman/a.py", "10->11"),
+                ("hangman/utils.py", "5->6"),
+            }),
+        )
+        report = Grader().grade(reachability, hits)
+        # 1 reachable + 1 extra = 2 enumerated. 2 authoritative. reconciled.
+        assert report.audit.reconciled is True
+        assert report.audit.extra_coverage_branches == 1
+        assert report.audit.total_branches_enumerated_via_reachability == 1
+        assert len(report.audit.unattributed_branches) == 0
+
 
 class TestTotals:
     def test_totals_use_authoritative_count(self) -> None:
@@ -2194,6 +2241,31 @@ class TestTotals:
         report = Grader().grade(reachability, hits)
         assert report.totals.total_branches == 1
         assert report.totals.covered_branches == 1
+        assert report.totals.pct == 100.0
+
+    def test_totals_excludes_out_of_scope_hits(self) -> None:
+        # Per plan-review iter 4 P1 (Codex): hits in files not in
+        # total_branches_per_file (out-of-scope leakage) MUST NOT count
+        # toward `covered`. The design says
+        # `covered = |hits.all_hits ∩ all branches in backend/src/hangman/|`;
+        # using `len(hits.all_hits)` over-reports if any leakage gets through
+        # coverage.py's source filter.
+        ep = _ep("/a", "hangman.routes.handler_a")
+        reachability = {ep: [_branch("hangman/a.py", 10, "hangman.a.fn")]}
+        hits = LoadedCoverage(
+            hits_by_context={"POST /a": frozenset({
+                ("hangman/a.py", "10->11"),  # in scope
+                ("third_party/lib.py", "5->6"),  # out of scope
+            })},
+            total_branches_per_file={"hangman/a.py": 1},  # only in-scope file
+            all_hits=frozenset({
+                ("hangman/a.py", "10->11"),
+                ("third_party/lib.py", "5->6"),
+            }),
+        )
+        report = Grader().grade(reachability, hits)
+        assert report.totals.total_branches == 1
+        assert report.totals.covered_branches == 1  # NOT 2 — leakage filtered
         assert report.totals.pct == 100.0
 ```
 
@@ -2260,20 +2332,15 @@ class Grader:
         ]
         endpoints_cov.sort(key=lambda c: (c.endpoint.path, c.endpoint.method))
 
-        # Deduped enumeration across all endpoints + extra_coverage.
-        enumerated: set[tuple[str, str]] = set()
+        # Deduped reachable enumeration across all endpoints (R).
+        enumerated_reachable: set[tuple[str, str]] = set()
         for branches in reachability.values():
             for b in branches:
-                enumerated.add((b.file, b.branch_id))
+                enumerated_reachable.add((b.file, b.branch_id))
 
         extra_coverage = self._extra_coverage(reachability, hits)
-        for ec in extra_coverage:
-            # extra_coverage branches not tied to specific branch ids;
-            # they signal file-level "hit but not linked." Audit
-            # counts them by file's hit arcs that aren't in enumerated.
-            pass  # handled below in audit via set difference
 
-        audit = self._audit(enumerated, hits, extra_coverage)
+        audit = self._audit(enumerated_reachable, hits)
         totals = self._totals(hits)
 
         return CoverageReport(
@@ -2367,17 +2434,37 @@ class Grader:
 
     def _audit(
         self,
-        enumerated: set[tuple[str, str]],
+        enumerated_reachable: set[tuple[str, str]],
         hits: LoadedCoverage,
-        extra_coverage: list[ExtraCoverage],
     ) -> AuditReport:
-        # Per-file: authoritative total vs deduped enumerated count.
+        """Per plan-review iter 4 P1 (Codex) + design spec §4.6 step 4:
+        audit enumeration is `reachable ∪ distinct(extra branch hits)`,
+        not `reachable` alone with `extra_count = 0`.
+
+        - R = enumerated_reachable (deduped across endpoints, by static graph)
+        - E = hits.all_hits − R (branches hit by the BDD suite that the
+              static graph did not link to any endpoint — typically shared
+              helpers reached via untagged contexts, or callsites pyan3
+              missed). E branches DO have known (file, branch_id) tuples
+              from coverage.py, so they CAN be counted in the enumeration.
+        - Audit invariant: per file, `auth = R_in_file + E_in_file +
+          unattributed_in_file`. `reconciled = True` iff the invariant
+          holds across every in-scope file.
+        """
+        extra_branch_hits = hits.all_hits - enumerated_reachable
+        enumerated_total = enumerated_reachable | extra_branch_hits  # deduped union
+
+        per_file_enumerated: dict[str, int] = {f: 0 for f in hits.total_branches_per_file}
+        for (f, _bid) in enumerated_total:
+            if f in per_file_enumerated:
+                per_file_enumerated[f] += 1
+        # Hits in files NOT in total_branches_per_file are out-of-scope leakage
+        # (coverage.py's `source = src/hangman` config should prevent this; the
+        # filtering above is defensive).
+
         unattributed: list[UnattributedBranch] = []
-        total_authoritative = sum(hits.total_branches_per_file.values())
-        extra_count = 0  # extra_coverage doesn't add known branch_ids
         for file, auth_count in hits.total_branches_per_file.items():
-            enumerated_in_file = sum(1 for (f, _bid) in enumerated if f == file)
-            delta = auth_count - enumerated_in_file
+            delta = auth_count - per_file_enumerated[file]
             if delta > 0:
                 for i in range(delta):
                     unattributed.append(
@@ -2385,23 +2472,37 @@ class Grader:
                             file=file,
                             line=-1,
                             branch_id=f"unknown_{i}",
-                            reason="coverage.py reports branch in file; static graph did not link it to any endpoint",
+                            reason="coverage.py reports branch in file; neither static graph nor BDD hits identified it",
                         )
                     )
+
+        total_authoritative = sum(hits.total_branches_per_file.values())
         reconciled = (
-            len(enumerated) + extra_count + len(unattributed) == total_authoritative
+            sum(per_file_enumerated.values()) + len(unattributed) == total_authoritative
         )
         return AuditReport(
             total_branches_per_coverage_py=total_authoritative,
-            total_branches_enumerated_via_reachability=len(enumerated),
-            extra_coverage_branches=extra_count,
+            total_branches_enumerated_via_reachability=len(enumerated_reachable),
+            extra_coverage_branches=len(extra_branch_hits),
             unattributed_branches=tuple(unattributed),
             reconciled=reconciled,
         )
 
     def _totals(self, hits: LoadedCoverage) -> Totals:
+        """Per plan-review iter 4 P1 (Codex) + design spec §4.6 step 5:
+        `covered = |hits.all_hits ∩ all branches in backend/src/hangman/|`
+        — only in-scope hits count toward the headline percentage.
+
+        Coverage.py's `source = src/hangman` config (.coveragerc) should
+        already scope `all_hits` to in-scope files, but we filter
+        defensively in case a hit leaks in from outside the source root
+        (e.g., a third-party package whose path happens to match). The
+        in-scope set is the keys of `total_branches_per_file`, which is
+        derived from `measured_files()` filtered to the source path.
+        """
         total = sum(hits.total_branches_per_file.values())
-        covered = len(hits.all_hits)
+        in_scope_files = set(hits.total_branches_per_file.keys())
+        covered = sum(1 for (f, _bid) in hits.all_hits if f in in_scope_files)
         pct = (covered / total * 100) if total else 0.0
         return Totals(
             total_branches=total,
@@ -2420,7 +2521,7 @@ class Grader:
 - [ ] **Step 4: Run tests — expect pass**
 
 Run: `cd backend && uv run pytest tests/unit/tools/branch_coverage/test_grader.py -v`
-Expected: all pass (11 tests).
+Expected: all pass (13 tests — 11 original + 2 added in iter 4 patches: `test_extra_branch_hits_count_in_audit_enumeration` and `test_totals_excludes_out_of_scope_hits`).
 
 - [ ] **Step 5: ruff + mypy**
 
@@ -4192,6 +4293,37 @@ Verify:
 - [ ] **Step 7b: Verify per-endpoint attribution is real (Option B correctness check)**
 
 Per plan-review iter 1 P1: D1's unit tests don't prove the middleware actually attributes hits per-endpoint correctly. This step is the load-bearing verification.
+
+**First, the path-format invariant** (per plan-review iter 4 P1, Claude). Reachability emits paths like `src/hangman/game.py`; coverage.py with `relative_files = true` + `cd backend` should match. If paths don't agree, every endpoint reports 0% / audit fails on every real run — fail fast here:
+
+```bash
+cd backend && uv run python -c "
+import json
+data = json.loads(open('../tests/bdd/reports/coverage.json').read())
+audit_files = {b['file'] for b in data['audit'].get('unattributed_branches', [])}
+endpoint_files = set()
+for ep in data['endpoints']:
+    for b in ep.get('uncovered_branches_flat', []):
+        endpoint_files.add(b['file'])
+all_files = audit_files | endpoint_files
+print(f'Files referenced in coverage.json: {len(all_files)}')
+for f in sorted(all_files)[:5]:
+    print(f'  - {f}')
+bad = [f for f in all_files if f.startswith('/') or f.startswith('backend/')]
+if bad:
+    print(f'❌ PATH-FORMAT MISMATCH: {len(bad)} files have wrong prefix:')
+    for f in bad[:5]:
+        print(f'    {f}')
+    print('Expected format: src/hangman/<module>.py')
+    print('Check .coveragerc has relative_files = true AND backend-coverage.sh does cd backend.')
+    exit(2)
+print('✓ Path-format invariant holds')
+"
+```
+
+If this fails, coverage attribution is silently broken across the entire run; the rest of Step 7b will give false signals. Stop and fix.
+
+**Then the shared-helper correctness check.**
 
 The Hangman codebase has a known shared helper: `hangman.game.apply_guess` is reachable from both `POST /api/v1/games/{id}/guesses` (every guess scenario) and `POST /api/v1/games/{id}/forfeit` (forfeit calls apply_guess to mark the game lost). The BDD suite has scenarios for `/guesses` but no scenarios for `/forfeit` (verify with `grep -r "forfeit" frontend/tests/bdd/features/`).
 
