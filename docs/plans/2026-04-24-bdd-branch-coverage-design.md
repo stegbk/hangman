@@ -73,10 +73,10 @@ backend/tests/
 │   ├── test_grader.py
 │   ├── test_json_emitter.py                Golden-file against fixtures/golden_coverage.json
 │   ├── test_renderer.py                    Golden-file against fixtures/golden_coverage.html
-│   └── test_analyzer.py                    End-to-end with mocked subprocess
+│   └── test_analyzer.py                    End-to-end with mocked CallGraphBuilder
 └── fixtures/branch_coverage/               [N]
     ├── minimal.coverage                    Tiny binary .coverage file (generated once, committed)
-    ├── pyan3_output.txt                    Canned pyan3 output
+    ├── fake_adjacency.py                   Hand-built CallGraph fixture (Python, not DOT)
     ├── golden_coverage.json
     ├── golden_coverage.html
     └── minimal_app/
@@ -201,16 +201,28 @@ Defense: `coverage.py` instruments at bytecode level and knows the total branch 
 
 ```
 # Per file, coverage.py tells us:
-total_branches_in_file(f)  →  authoritative count
+total_branches_in_file(f)  →  authoritative count (a set of unique branch_id's)
 
-# Our enumeration:
-enumerated_in_file(f)  =  sum(branches linked to any endpoint in file f)
-                          + extra_coverage branches in file f
-                          + unattributed branches in file f
+# Our enumeration (DEDUPED — a branch reachable from N endpoints is
+# counted once, not N times):
+enumerated_in_file(f) = distinct(file, branch_id) tuples across:
+    {branches linked to any endpoint in file f}
+    ∪ {extra_coverage branches in file f}
+    ∪ {unattributed branches in file f}
 
 # Invariant:
-assert total_branches_in_file(f) == enumerated_in_file(f), for every file in backend/src/hangman/
+assert total_branches_in_file(f) == |enumerated_in_file(f)|,
+       for every file in backend/src/hangman/
 ```
+
+**Dedup is essential.** A shared helper function reachable from two endpoints appears in both endpoints' `reachable_functions` lists. For _per-endpoint_ coverage percentage, that's correct — each endpoint legitimately reports "of what I reach, this much was exercised." For the _audit_ reconciliation, we must dedupe: count each `(file, branch_id)` tuple once.
+
+The Grader maintains two views:
+
+- Per-endpoint: branches stay duplicated across endpoints (legitimate shared coverage).
+- Audit/totals: distinct set of `(file, branch_id)` tuples across the whole graph-walked enumeration.
+
+Test coverage mandate (for the plan): `test_grader.py` MUST include a fixture where a shared helper is reached from two endpoints, asserting (a) both endpoints report the helper's branches in their percentages, and (b) the audit `enumerated_in_file` count matches coverage.py's authoritative total (no double-counting).
 
 If the invariant holds, `CoverageReport.audit.reconciled = True`. If any file mismatches, the delta goes into `unattributed_branches` (the "third bucket" — neither linked to an endpoint nor hit by tests), and `reconciled = False` triggers a stderr warning plus a red audit banner on `coverage.html`.
 
@@ -218,15 +230,15 @@ If the invariant holds, `CoverageReport.audit.reconciled = True`. If any file mi
 
 ### 3.4 I/O boundaries
 
-| Boundary                          | Module                                                                      | Side                                          |
-| --------------------------------- | --------------------------------------------------------------------------- | --------------------------------------------- |
-| Reads `hangman.main`              | `routes.py`                                                                 | Input (reflective import — see risk #2 below) |
-| Reads `backend/src/hangman/**.py` | `callgraph.py` (via pyan3 subprocess) + `renderer.py` (for source snippets) | Input                                         |
-| Runs `pyan3` subprocess           | `callgraph.py`                                                              | Side-effect (external tool)                   |
-| Reads `.coverage` file            | `coverage_data.py`                                                          | Input                                         |
-| Writes `coverage.json`            | `json_emitter.py`                                                           | Output                                        |
-| Writes `coverage.html`            | `renderer.py`                                                               | Output                                        |
-| SIGTERM backend process           | `Makefile` recipe                                                           | Side-effect (outside the Python package)      |
+| Boundary                          | Module                                                                                                 | Side                                          |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------ | --------------------------------------------- |
+| Reads `hangman.main`              | `routes.py`                                                                                            | Input (reflective import — see risk #2 below) |
+| Reads `backend/src/hangman/**.py` | `callgraph.py` (via `pyan.analyzer.CallGraphVisitor` in-process) + `renderer.py` (for source snippets) | Input                                         |
+| In-process pyan3 analysis         | `callgraph.py`                                                                                         | CPU (no subprocess; pyan3 Python API)         |
+| Reads `.coverage` file            | `coverage_data.py`                                                                                     | Input                                         |
+| Writes `coverage.json`            | `json_emitter.py`                                                                                      | Output                                        |
+| Writes `coverage.html`            | `renderer.py`                                                                                          | Output                                        |
+| SIGTERM backend process           | `Makefile` recipe                                                                                      | Side-effect (outside the Python package)      |
 
 All analyzer internals are pure data transforms. Every external dependency is clearly at the edges.
 
@@ -371,16 +383,31 @@ class RouteEnumerator:
 ```python
 class CallGraphBuilder:
     def build(self, source_root: Path) -> CallGraph:
-        """Invoke `pyan3 <source_root>/**/*.py --dot --no-defines --uses` as
-        a subprocess, parse the DOT output, return a graph keyed by qualname.
+        """Uses pyan3's programmatic API (CallGraphVisitor) to analyze
+        backend/src/hangman/**/*.py. Returns an adjacency map keyed by
+        qualified name.
         """
 ```
 
-- Runs pyan3 via `subprocess.run(["pyan3", ...], capture_output=True, check=True, timeout=60)`.
-- Timeout protects against pyan3 hangs on large codebases (not a concern for Hangman, but defensive).
-- Parses DOT output with a hand-written tokenizer (avoid adding a DOT parser dependency).
+**Implementation via pyan3's Python API** (per research brief — pyan3 2.5.0 exposes `pyan.analyzer.CallGraphVisitor(["pkg/mod.py", ...])` + `.get_node(qualname)` / callgraph node traversal). Subprocess + DOT-parsing rejected: hand-written DOT parsers are bug magnets, and we lose programmatic access to node metadata.
+
+```python
+from pyan.analyzer import CallGraphVisitor
+
+def build(self, source_root: Path) -> CallGraph:
+    files = list(source_root.rglob("*.py"))
+    visitor = CallGraphVisitor([str(f) for f in files])
+    # visitor.uses_graph: dict[Node, set[Node]] — "X uses Y" = X calls Y
+    adjacency: dict[str, frozenset[str]] = {}
+    for caller, callees in visitor.uses_graph.items():
+        adjacency[caller.get_name()] = frozenset(c.get_name() for c in callees)
+    return CallGraph(adjacency=adjacency)
+```
+
+- Runs in-process — no subprocess, no DOT parsing, no timeout handling needed.
 - Returns an adjacency map: `dict[qualname, frozenset[qualname]]` — callee names reachable in one step.
-- On pyan3 failure (non-zero exit, timeout, malformed output): log error + return an empty graph. Reachability then reports 0 reachable functions per endpoint; audit reconciliation surfaces everything as `unattributed`. Tool still emits a valid report; dev sees the degraded state and can investigate pyan3.
+- **Degraded path:** if `CallGraphVisitor` raises (pyan3 API drift, unparseable source, bug), catch broad `Exception`, log error with the file that tripped it, return an empty graph. Reachability then reports 0 reachable functions per endpoint; audit reconciliation surfaces everything as `unattributed`. Tool still emits a valid report; dev sees the degraded state and can investigate pyan3.
+- **API drift risk:** pyan3 was just-revived (2026-02); its internal API may change. Plan-phase task: integration test smoke run pyan3 against the real Hangman codebase; pin `pyan3>=2.5,<3` (major-version bound). Plan's H-equivalent live run catches breakage.
 
 ### 4.4 `reachability.py` — `Reachability`
 
@@ -847,16 +874,16 @@ See PRD §5 + the discussion's Section 4. Summary:
 
 ### 8.1 Feature 3 unit tests (~60-80 tests across 8 test files)
 
-| Test file               | Coverage                                                                                                            |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `test_routes.py`        | `RouteEnumerator.enumerate()` on fixture app; handles `prefix=`, `add_api_route`, missing methods                   |
-| `test_callgraph.py`     | Parser consumes canned pyan3 DOT output fixture; handles malformed output gracefully                                |
-| `test_reachability.py`  | BFS correctness, cycle handling, handler-not-in-graph edge case, boundary enforcement                               |
-| `test_coverage_data.py` | Reads committed `minimal.coverage` fixture; handles negative target-line arcs; missing-file error                   |
-| `test_grader.py`        | Branch-weighted pct math; threshold tone resolution; **audit reconciliation invariant** (the correctness guarantor) |
-| `test_json_emitter.py`  | Golden-file against `fixtures/golden_coverage.json`; enum + tuple serialization                                     |
-| `test_renderer.py`      | Golden-file against `fixtures/golden_coverage.html`; autoescape of condition_text                                   |
-| `test_analyzer.py`      | End-to-end with mocked subprocess (pyan3 canned); happy path + degraded-pyan3 path                                  |
+| Test file               | Coverage                                                                                                                                                                           |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `test_routes.py`        | `RouteEnumerator.enumerate()` on fixture app; handles `prefix=`, `add_api_route`, missing methods                                                                                  |
+| `test_callgraph.py`     | `CallGraphBuilder.build()` against `fixtures/branch_coverage/minimal_app/` (real pyan3 API run); separate test mocks `CallGraphVisitor` to simulate failure → empty graph fallback |
+| `test_reachability.py`  | BFS correctness, cycle handling, handler-not-in-graph edge case, boundary enforcement                                                                                              |
+| `test_coverage_data.py` | Reads committed `minimal.coverage` fixture; handles negative target-line arcs; missing-file error                                                                                  |
+| `test_grader.py`        | Branch-weighted pct math; threshold tone resolution; **audit reconciliation invariant** (the correctness guarantor)                                                                |
+| `test_json_emitter.py`  | Golden-file against `fixtures/golden_coverage.json`; enum + tuple serialization                                                                                                    |
+| `test_renderer.py`      | Golden-file against `fixtures/golden_coverage.html`; autoescape of condition_text                                                                                                  |
+| `test_analyzer.py`      | End-to-end with a fake `CallGraphBuilder` returning a hand-built adjacency map (no real pyan3 invocation at test time); happy path + degraded-pyan3 path (empty graph)             |
 
 ### 8.2 Feature 2 tests to update (~10 new/modified)
 
