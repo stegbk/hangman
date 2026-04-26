@@ -1,0 +1,30 @@
+[run]
+branch = true
+parallel = true
+sigterm = true
+concurrency = thread
+source = src/hangman
+# Note: NO `context = base` here, despite the D3 fixture's docstring
+# suggesting it might help. Empirically verified post-Phase-5 iter 4
+# that on coverage.py 7.13.5:
+#   Coverage(context="base", ...) + switch_context per-request →
+#     contexts STILL drop labels (lag bug) AND each context returns
+#     ALL arcs (filter doesn't partition). Worse than no base.
+#   Coverage(...) + switch_context per-request (no resets) →
+#     long runs of the same label work fine; rapid switching across
+#     different labels has lag-attribution. Common case (BDD suite
+#     with many requests against the same endpoints) works.
+# See middleware.py module docstring for the full trade-off.
+# Per plan-review iter 4 P1 (Claude): align coverage.py's path format with
+# Reachability's path computation. With `cd backend` in backend-coverage.sh
+# below, `relative_files = true` makes measured_files() return
+# `src/hangman/game.py` (relative to backend/, the CWD at coverage-run time).
+# Reachability also emits `src/hangman/game.py` (via
+# source_file.relative_to(source_root.parent.parent) where source_root is the
+# absolute path to backend/src/hangman/). Both sides agree → audit math works.
+# Without this flag, measured_files() returns absolute paths and every
+# endpoint reports 0% / audit fails on every real run.
+relative_files = true
+
+[report]
+show_missing = true

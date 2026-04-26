@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Branch Coverage — {{ report.timestamp }}</title>
+  <style>
+    :root { --bg:#0f1115; --fg:#e8eaed; --muted:#9aa0a6;
+            --success:#2aa876; --warning:#f5a623; --error:#e74c3c; }
+    body { background:var(--bg); color:var(--fg);
+           font-family:-apple-system,system-ui,sans-serif; margin:0; padding:24px; }
+    h1 { margin:0 0 8px; font-weight:600; }
+    .muted { color:var(--muted); font-size:13px; }
+    .banner-warn { background:var(--warning); color:#000; padding:12px;
+                   border-radius:8px; margin:12px 0; }
+    .banner-info { background:#1a2d4a; color:var(--fg); padding:12px;
+                   border-radius:8px; margin:12px 0; }
+    .totals { background:#1a1d24; border-radius:12px; padding:20px;
+              margin:24px 0; }
+    .totals .value { font-size:40px; font-weight:700; }
+    .totals.success .value { color:var(--success); }
+    .totals.warning .value { color:var(--warning); }
+    .totals.error .value { color:var(--error); }
+    .endpoints { display:grid;
+                 grid-template-columns:repeat(auto-fill,minmax(320px,1fr)); gap:12px; }
+    .card { background:#1a1d24; border-radius:12px; padding:16px;
+            border:1px solid #252932; }
+    .card.success { border-color:var(--success); }
+    .card.warning { border-color:var(--warning); }
+    .card.error { border-color:var(--error); }
+    .card .pct { font-size:24px; font-weight:700; margin:4px 0; }
+    .card.success .pct { color:var(--success); }
+    .card.warning .pct { color:var(--warning); }
+    .card.error .pct { color:var(--error); }
+    .drilldown { background:#0f1115; border-radius:8px; padding:12px;
+                 margin-top:12px; font-size:12px; }
+    .drilldown details summary { cursor:pointer; }
+    .extra, .audit { background:#1a1d24; border-radius:12px; padding:16px;
+                     margin:16px 0; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Branch Coverage</h1>
+    <div class="muted">{{ report.timestamp }} · BDD suite vs. backend/src/hangman/</div>
+  </header>
+
+  <div class="banner-info">
+    ℹ This run used coverage instrumentation. Performance metrics in this
+    report are not representative of normal runs.
+  </div>
+
+  {% if not report.audit.reconciled %}
+  <div class="banner-warn">
+    ⚠ Audit reconciliation FAILED —
+    {{ report.audit.unattributed_branches|length }} unattributed branches.
+    coverage.py says {{ report.audit.total_branches_per_coverage_py }} branches
+    exist; our enumeration found only
+    {{ report.audit.total_branches_enumerated_via_reachability }}. See the
+    audit section below for details.
+  </div>
+  {% endif %}
+
+  <section class="totals {{ report.totals.tone.value }}">
+    <div class="muted">Total coverage</div>
+    <div class="value">{{ '%.1f'|format(report.totals.pct) }}%</div>
+    <div class="muted">
+      {{ report.totals.covered_branches }} of
+      {{ report.totals.total_branches }} branches covered
+    </div>
+  </section>
+
+  <h2>Per endpoint</h2>
+  <section class="endpoints">
+    {% for ep in report.endpoints %}
+      {% include "_endpoint_card.html.j2" %}
+    {% endfor %}
+  </section>
+
+  {% if report.extra_coverage %}
+  <section class="extra">
+    <h2>Extra coverage</h2>
+    <div class="muted">
+      Files hit by the BDD suite that the static call-graph didn't link
+      to any endpoint.
+    </div>
+    <ul>
+      {% for ec in report.extra_coverage %}
+      <li><code>{{ ec.file }}</code> — {{ ec.reason }}</li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+
+  <section class="audit">
+    <h2>Audit reconciliation</h2>
+    <div class="muted">
+      authoritative (coverage.py) = {{ report.audit.total_branches_per_coverage_py }} ·
+      enumerated via reachability = {{ report.audit.total_branches_enumerated_via_reachability }} ·
+      extra_coverage branches = {{ report.audit.extra_coverage_branches }} ·
+      unattributed = {{ report.audit.unattributed_branches|length }} ·
+      reconciled = {{ report.audit.reconciled }}
+    </div>
+    {% if report.audit.unattributed_branches %}
+    <details>
+      <summary>Unattributed branches ({{ report.audit.unattributed_branches|length }})</summary>
+      <ul>
+        {% for ub in report.audit.unattributed_branches %}
+        <li><code>{{ ub.file }}:{{ ub.line }}</code> — {{ ub.reason }}</li>
+        {% endfor %}
+      </ul>
+    </details>
+    {% endif %}
+  </section>
+</body>
+</html>

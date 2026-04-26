@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "timestamp": "2026-04-24T20:00:00Z",
+  "cucumber_ndjson": "frontend/test-results/cucumber.coverage.ndjson",
+  "instrumented": true,
+  "thresholds": {
+    "red": 50.0,
+    "yellow": 80.0
+  },
+  "totals": {
+    "total_branches": 1,
+    "covered_branches": 0,
+    "pct": 0.0,
+    "tone": "error"
+  },
+  "endpoints": [
+    {
+      "method": "POST",
+      "path": "/api/v1/games",
+      "handler_qualname": "hangman.routes.start_game",
+      "total_branches": 1,
+      "covered_branches": 0,
+      "pct": 0.0,
+      "tone": "error",
+      "reachable_functions": [
+        {
+          "file": "src/hangman/words.py",
+          "qualname": "hangman.words.WordPool.random_word",
+          "total_branches": 1,
+          "covered_branches": 0,
+          "pct": 0.0,
+          "reached": false,
+          "uncovered_branches": [
+            {
+              "file": "src/hangman/words.py",
+              "line": 23,
+              "branch_id": "23->24",
+              "condition_text": "if category not in self.categories:",
+              "not_taken_to_line": 24
+            }
+          ]
+        }
+      ],
+      "uncovered_branches_flat": [
+        {
+          "file": "src/hangman/words.py",
+          "line": 23,
+          "branch_id": "23->24",
+          "condition_text": "if category not in self.categories:",
+          "not_taken_to_line": 24,
+          "function_qualname": "hangman.words.WordPool.random_word"
+        }
+      ]
+    }
+  ],
+  "extra_coverage": [],
+  "audit": {
+    "total_branches_per_coverage_py": 1,
+    "total_branches_enumerated_via_reachability": 1,
+    "extra_coverage_branches": 0,
+    "unattributed_branches": [],
+    "reconciled": true
+  }
+}

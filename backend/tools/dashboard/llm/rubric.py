@@ -25,7 +25,7 @@ invent issues.
 
 This rubric has two sections:
 
-1. **Domain-specific criteria (D1–D6)** — problems that are specific to the
+1. **Domain-specific criteria (D1–D7)** — problems that are specific to the
    Hangman game's API contract and UI behaviour.
 2. **Hygiene criteria (H1–H7)** — universal Gherkin anti-patterns that apply
    to any BDD suite, regardless of the application domain.
@@ -663,6 +663,37 @@ A suite of purely ``@happy`` scenarios is an optimism bias — real users hit
 error paths constantly, and the game logic has non-trivial edge cases
 (already-guessed letters, transition to ``won``/``lost``) that only edge and
 failure scenarios exercise.
+
+---
+
+### D7 (P2): Missed coverage opportunity
+
+**Description.** The scenario hits an endpoint that the app has
+uncovered branches for. Emit a finding ONLY if the scenario plausibly
+could exercise one of those branches with a minor change. Use the
+`## Coverage context for this run` section (when present) as the
+source of truth for which branches are uncovered.
+
+**Fails:**
+```gherkin
+@happy @smoke
+Scenario: create a game for the "animals" category
+  When I POST /api/v1/games with category "animals"
+  Then the response status is 201
+```
+
+(``POST /api/v1/games`` reaches ``hangman.words.WordPool.random_word``
+which has an uncovered ``if category not in self.categories: raise
+KeyError(...)`` branch — scenario could include a "create a game for
+a missing category" variant and is missing it. The branch reference
+is grounded in ``backend/src/hangman/words.py``.)
+
+**Passes:** the scenario covers the branch, OR the branch isn't
+plausibly reachable from the scenario's user intent.
+
+**Why it matters.** Coverage data surfaces specific gaps the rubric
+(D1–D6) can't see — this criterion lets the LLM suggest targeted
+additions with file:line evidence.
 
 ---
 

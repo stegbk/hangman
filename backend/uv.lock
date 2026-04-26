@@ -422,9 +422,11 @@ dependencies = [
 [package.dev-dependencies]
 dev = [
     { name = "anthropic" },
+    { name = "coverage" },
     { name = "httpx" },
     { name = "jinja2" },
     { name = "mypy" },
+    { name = "pyan3" },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "ruff" },
@@ -441,9 +443,11 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "anthropic", specifier = ">=0.97,<1" },
+    { name = "coverage", specifier = ">=7.13,<7.14" },
     { name = "httpx", specifier = ">=0.28,<1" },
     { name = "jinja2", specifier = ">=3.1.6,<3.2" },
     { name = "mypy", specifier = ">=1.13,<2" },
+    { name = "pyan3", specifier = ">=2.5,<3" },
     { name = "pytest", specifier = ">=8.3,<9" },
     { name = "pytest-cov", specifier = ">=5,<6" },
     { name = "ruff", specifier = ">=0.15,<0.16" },
@@ -829,6 +833,18 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/f9/e2/3e91f31a7d2b083fe6ef3fa267035b518369d9511ffab804f839851d2779/pluggy-1.6.0.tar.gz", hash = "sha256:7dcc130b76258d33b90f61b658791dede3486c3e6bfb003ee5c9bfb396dd22f3", size = 69412, upload-time = "2025-05-15T12:30:07.975Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/54/20/4d324d65cc6d9205fabedc306948156824eb9f0ee1633355a8f7ec5c66bf/pluggy-1.6.0-py3-none-any.whl", hash = "sha256:e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746", size = 20538, upload-time = "2025-05-15T12:30:06.134Z" },
+]
+
+[[package]]
+name = "pyan3"
+version = "2.5.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "jinja2" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/52/0a/0060a6594f3b77af97e491013b9b2961450e2397c7d1813eb18a3c0a235e/pyan3-2.5.0.tar.gz", hash = "sha256:167b55f0920abf4e47f0514b2717efb84118f3dab88b0b024b4308b95e73e63a", size = 86423, upload-time = "2026-04-21T21:38:49.29Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a1/6e/b3ac33c49f9e907528cbdc35696318d1ed2f07f4e462521653f4cb29bc17/pyan3-2.5.0-py3-none-any.whl", hash = "sha256:9ec91c305477ef0d20b92c568cdf821f5cd87ea027084013851c726d3093cd6c", size = 84033, upload-time = "2026-04-21T21:38:48.094Z" },
 ]
 
 [[package]]

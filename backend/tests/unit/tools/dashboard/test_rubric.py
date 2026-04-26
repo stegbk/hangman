@@ -19,10 +19,14 @@ class TestRubricLength:
 
 
 class TestRubricStructure:
-    def test_contains_all_13_criteria(self) -> None:
-        required = [f"D{i}" for i in range(1, 7)] + [f"H{i}" for i in range(1, 8)]
+    def test_contains_all_14_criteria(self) -> None:
+        required = [f"D{i}" for i in range(1, 8)] + [f"H{i}" for i in range(1, 8)]
         missing = [cid for cid in required if cid not in RUBRIC_TEXT]
         assert missing == [], f"Rubric missing criteria: {missing}"
+
+    def test_mentions_d7_missed_coverage_opportunity(self) -> None:
+        assert "D7" in RUBRIC_TEXT
+        assert "Missed coverage opportunity" in RUBRIC_TEXT
 
     def test_mentions_report_findings_tool(self) -> None:
         assert "ReportFindings" in RUBRIC_TEXT

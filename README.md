@@ -164,6 +164,80 @@ Output: `tests/bdd/reports/dashboard.html`. Open in a browser.
 Runs at ~$1.11 Sonnet / ~$0.37 Haiku / ~$1.86 Opus per invocation. The
 rubric is cached; cache hit rate runs ~90% after the first call.
 
+## BDD Branch Coverage (Feature 3)
+
+A developer-only tool that measures what code paths in
+`backend/src/hangman/` the BDD suite actually exercises — per-endpoint,
+with authoritative audit reconciliation against coverage.py's branch
+counts. Produces `tests/bdd/reports/coverage.html` (standalone report)
+and `tests/bdd/reports/coverage.json` (consumed by Feature 2's
+dashboard as an augment card + LLM coverage-aware findings).
+
+### Prerequisites
+
+- Feature 1 (BDD suite) and Feature 2 (dashboard) on master
+- `make install` has run (adds coverage + pyan3 dev deps)
+- No API key required (Feature 3 is local-only; Feature 2's LLM
+  augmentation is optional)
+
+### Run
+
+Three terminals (matches the existing `make backend` + `make frontend`
+
+- `make bdd` pattern):
+
+```bash
+# Terminal 1
+make backend-coverage
+
+# Terminal 2
+make frontend
+
+# Terminal 3
+make bdd-coverage
+```
+
+`make bdd-coverage` runs the cucumber suite, SIGTERMs the backend
+(coverage.py's `sigterm=true` flushes the data file), combines the
+parallel-mode fragments, and invokes the analyzer. Emits:
+
+- `frontend/test-results/cucumber.coverage.ndjson` — instrumented BDD run
+- `tests/bdd/reports/coverage.html` — standalone coverage dashboard
+- `tests/bdd/reports/coverage.json` — machine-readable artifact for Feature 2
+
+**Important: single uvicorn worker + sequential cucumber.** Coverage
+contexts are process-global; concurrent requests corrupt attribution.
+Both defaults are already single-threaded. Don't bump workers for
+instrumented runs.
+
+### What it measures
+
+- **Per-endpoint coverage**: for each FastAPI route, what % of
+  reachable branches did scenarios hitting THAT endpoint actually
+  exercise. Red (<50%) / yellow (50-80%) / green (≥80%).
+- **Drill-down**: per-reachable-function list of uncovered branches
+  with file:line + source snippet.
+- **Extra coverage**: functions hit by the BDD suite that the static
+  call-graph missed (e.g. FastAPI `Depends()` chains).
+- **Audit reconciliation**: cross-check against coverage.py's
+  authoritative per-file branch count. Any gap lands in
+  `unattributed_branches` — surfaced, not silently dropped.
+
+### Feature 2 integration
+
+When `tests/bdd/reports/coverage.json` is present and fresh (within 1h
+of the cucumber.ndjson mtime), `make bdd-dashboard` auto-detects it
+and augments:
+
+- New "Code coverage" summary card on the dashboard
+- Per-endpoint uncovered-branch data injected into the LLM's cached
+  system prompt (coverage-aware findings via new criterion D7)
+
+### Cost
+
+Zero API cost. Coverage instrumentation adds ~10-30% to BDD suite
+wall-clock time.
+
 ## Running the BDD suite
 
 The BDD suite (pure `@cucumber/cucumber` v12 + `playwright`) runs separately from `make verify` and requires the backend + frontend running in test-mode.

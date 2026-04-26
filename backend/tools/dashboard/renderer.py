@@ -13,6 +13,7 @@ from jinja2 import Environment, PackageLoader, select_autoescape
 
 from tools.dashboard.models import (
     AnalysisContext,
+    CoverageContext,
     CoverageGrade,
     CoverageState,
     Feature,
@@ -83,12 +84,13 @@ class DashboardRenderer:
         history: list[RunSummary],
         skipped_packages: tuple[str, ...],
         run_summary: RunSummary,
+        coverage_context: CoverageContext | None,
         output_path: Path,
     ) -> None:
         template = self._env.get_template("base.html.j2")
         scenarios = self._build_scenario_views(context, findings)
         feature_findings = self._build_feature_finding_groups(context, findings)
-        summary_cards = self._build_summary_cards(context, grades, run_summary)
+        summary_cards = self._build_summary_cards(context, grades, run_summary, coverage_context)
         run_data = self._build_run_data(history, run_summary)
 
         html = template.render(
@@ -165,6 +167,7 @@ class DashboardRenderer:
         context: AnalysisContext,
         grades: list[CoverageGrade],
         summary: RunSummary,
+        coverage_context: CoverageContext | None,
     ) -> list[SummaryCard]:
         total = summary.total_scenarios
         passed = summary.passed
@@ -189,7 +192,7 @@ class DashboardRenderer:
         p1 = summary.finding_counts.get(Severity.P1, 0)
         p2 = summary.finding_counts.get(Severity.P2, 0)
 
-        return [
+        cards = [
             SummaryCard(
                 title="Total scenarios",
                 value=str(total),
@@ -233,6 +236,33 @@ class DashboardRenderer:
                 tone="warning" if p2 else "",
             ),
         ]
+
+        # New "Code coverage" card (Feature 3 augment).
+        if coverage_context is not None:
+            audit_suffix = " · ⚠ audit failed" if not coverage_context.audit_reconciled else ""
+            cards.append(
+                SummaryCard(
+                    title="Code coverage",
+                    value=f"{coverage_context.totals_pct:.0f}%",
+                    subtitle=(
+                        f"{coverage_context.totals_covered_branches}/"
+                        f"{coverage_context.totals_total_branches} branches"
+                        f"{audit_suffix}"
+                    ),
+                    tone=coverage_context.totals_tone,
+                )
+            )
+        else:
+            cards.append(
+                SummaryCard(
+                    title="Code coverage",
+                    value="—",
+                    subtitle="Run `make bdd-coverage` to enable",
+                    tone="",
+                )
+            )
+
+        return cards
 
     def _build_run_data(self, history: list[RunSummary], current: RunSummary) -> dict[str, object]:
         hist = [

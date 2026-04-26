@@ -6,6 +6,7 @@ Every dataclass is frozen — the pipeline is a pure data transformation.
 
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any
 
 
 class Severity(Enum):
@@ -158,3 +159,23 @@ class ParseResult:
     scenarios: tuple[Scenario, ...]
     timestamp: str
     gherkin_document_uris: frozenset[str]
+
+
+@dataclass(frozen=True)
+class CoverageContext:
+    """Typed view over coverage.json (Feature 3's output) consumed by Feature 2.
+
+    When present, drives: (a) the augment "Code coverage" summary card,
+    and (b) a coverage summary injected into the LLM's cached system
+    prompt. See design spec §6.2.
+    """
+
+    timestamp: str
+    totals_pct: float
+    totals_tone: str  # "success" | "warning" | "error"
+    totals_covered_branches: int
+    totals_total_branches: int
+    endpoints_summary: tuple[tuple[str, str, float, str], ...]  # (method, path, pct, tone)
+    endpoints_uncovered_flat: dict[str, tuple[dict[str, Any], ...]]  # key = f"{method} {path}"
+    audit_reconciled: bool
+    audit_unattributed_count: int

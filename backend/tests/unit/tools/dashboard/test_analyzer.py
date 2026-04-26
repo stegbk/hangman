@@ -92,3 +92,299 @@ class TestFindingSort:
         ]
         sorted_ = _sort_findings(findings)
         assert [f.severity for f in sorted_] == [Severity.P0, Severity.P1, Severity.P3]
+
+
+class TestCoverageAugmentation:
+    def test_missing_coverage_json_returns_none_context(self, tmp_path: Path) -> None:
+        # No coverage.json file present → CoverageContext is None, no crash.
+        # Module-level function — no Analyzer instance needed.
+        from tools.dashboard.analyzer import load_coverage_context_if_fresh
+
+        # Construct a path that mirrors the expected layout
+        # (parent.parent.parent / tests / bdd / reports / coverage.json must NOT exist).
+        ndjson = tmp_path / "frontend" / "test-results" / "cucumber.ndjson"
+        ndjson.parent.mkdir(parents=True)
+        ndjson.write_text("")
+        cov = load_coverage_context_if_fresh(ndjson)
+        assert cov is None
+
+    def test_stale_coverage_json_returns_none(self, tmp_path: Path) -> None:
+        import json
+
+        from tools.dashboard.analyzer import load_coverage_context_if_fresh
+
+        # Create a coverage.json with a timestamp >1h older than ndjson mtime.
+        ndjson = tmp_path / "frontend" / "test-results" / "cucumber.ndjson"
+        ndjson.parent.mkdir(parents=True)
+        ndjson.write_text("")
+        cov_json = tmp_path / "tests" / "bdd" / "reports" / "coverage.json"
+        cov_json.parent.mkdir(parents=True)
+        cov_json.write_text(
+            json.dumps(
+                {
+                    "timestamp": "2020-01-01T00:00:00Z",
+                    "totals": {
+                        "pct": 50.0,
+                        "tone": "warning",
+                        "covered_branches": 5,
+                        "total_branches": 10,
+                    },
+                    "endpoints": [],
+                    "audit": {"reconciled": True, "unattributed_branches": []},
+                }
+            )
+        )
+        cov = load_coverage_context_if_fresh(ndjson)
+        assert cov is None  # too stale
+
+    def test_corrupt_coverage_json_returns_none_context(
+        self, tmp_path: Path, caplog: object
+    ) -> None:
+        """Per Phase 5 code-review iter 1 P1: a partial / hand-edited /
+        older-schema coverage.json must NOT crash the dashboard. The
+        builder should log a schema-mismatch warning and return None
+        so the dashboard renders without the coverage card."""
+        import json
+        import logging
+        from datetime import UTC, datetime
+
+        from tools.dashboard.analyzer import load_coverage_context_if_fresh
+
+        ndjson = tmp_path / "frontend" / "test-results" / "cucumber.ndjson"
+        ndjson.parent.mkdir(parents=True)
+        ndjson.write_text("")
+        cov_json = tmp_path / "tests" / "bdd" / "reports" / "coverage.json"
+        cov_json.parent.mkdir(parents=True)
+        # Fresh timestamp so we get past the staleness check; missing
+        # `endpoints` key entirely AND `totals` malformed (a list instead
+        # of a dict) — should trigger the KeyError/TypeError path.
+        cov_ts = datetime.fromtimestamp(ndjson.stat().st_mtime, tz=UTC).isoformat()
+        cov_json.write_text(
+            json.dumps(
+                {
+                    "timestamp": cov_ts,
+                    # No "endpoints" key, "totals" is a list not a dict.
+                    "totals": ["this", "is", "not", "a", "dict"],
+                    "audit": {"reconciled": True, "unattributed_branches": []},
+                }
+            )
+        )
+
+        with caplog.at_level(logging.WARNING):  # type: ignore[attr-defined]
+            cov = load_coverage_context_if_fresh(ndjson)
+
+        assert cov is None
+        assert any(
+            "schema mismatch" in rec.message
+            for rec in caplog.records  # type: ignore[attr-defined]
+        ), f"expected schema-mismatch warning; got {[r.message for r in caplog.records]}"  # type: ignore[attr-defined]
+
+    def test_string_scalar_pct_returns_none_context(self, tmp_path: Path, caplog: object) -> None:
+        """Per Phase 5 code-review iter 2 P1 (Codex): a coverage.json with
+        valid dict shape but string-typed scalars (e.g., `pct: "75"`) must
+        NOT pass through to build_coverage_summary, which would crash on
+        `f"{pct:.0f}"` (ValueError on str format-spec).
+
+        The builder must coerce scalars (float/int/str) at construction
+        time; on type mismatch the ValueError is caught and the function
+        returns None + warning."""
+        import json
+        import logging
+        from datetime import UTC, datetime
+
+        from tools.dashboard.analyzer import load_coverage_context_if_fresh
+
+        ndjson = tmp_path / "frontend" / "test-results" / "cucumber.ndjson"
+        ndjson.parent.mkdir(parents=True)
+        ndjson.write_text("")
+        cov_json = tmp_path / "tests" / "bdd" / "reports" / "coverage.json"
+        cov_json.parent.mkdir(parents=True)
+        cov_ts = datetime.fromtimestamp(ndjson.stat().st_mtime, tz=UTC).isoformat()
+        cov_json.write_text(
+            json.dumps(
+                {
+                    "timestamp": cov_ts,
+                    # `pct` is a string — would crash f"{ctx.totals_pct:.0f}"
+                    "totals": {
+                        "pct": "not-a-number",
+                        "tone": "warning",
+                        "covered_branches": 10,
+                        "total_branches": 20,
+                    },
+                    "endpoints": [],
+                    "audit": {"reconciled": True, "unattributed_branches": []},
+                }
+            )
+        )
+
+        with caplog.at_level(logging.WARNING):  # type: ignore[attr-defined]
+            cov = load_coverage_context_if_fresh(ndjson)
+
+        assert cov is None, (
+            "Expected None when totals.pct is a non-numeric string — got a "
+            "CoverageContext that would crash build_coverage_summary later."
+        )
+        assert any(
+            "schema mismatch" in rec.message
+            for rec in caplog.records  # type: ignore[attr-defined]
+        )
+
+    def test_string_reconciled_returns_none_context(self, tmp_path: Path, caplog: object) -> None:
+        """Per Phase 5 code-review iter 3 P2 (Codex): the iter-2 fix used
+        `bool(audit.get("reconciled", True))`, but `bool("false")` is True
+        (non-empty string is truthy). A coverage.json with
+        `"reconciled": "false"` would build a CoverageContext with
+        audit_reconciled=True, suppressing the audit-failed warning in
+        the renderer.
+
+        Fix: `_strict_bool` raises ValueError on non-bool, downgraded to
+        None + warning. This test asserts a string `"false"` is rejected.
+        """
+        import json
+        import logging
+        from datetime import UTC, datetime
+
+        from tools.dashboard.analyzer import load_coverage_context_if_fresh
+
+        ndjson = tmp_path / "frontend" / "test-results" / "cucumber.ndjson"
+        ndjson.parent.mkdir(parents=True)
+        ndjson.write_text("")
+        cov_json = tmp_path / "tests" / "bdd" / "reports" / "coverage.json"
+        cov_json.parent.mkdir(parents=True)
+        cov_ts = datetime.fromtimestamp(ndjson.stat().st_mtime, tz=UTC).isoformat()
+        cov_json.write_text(
+            json.dumps(
+                {
+                    "timestamp": cov_ts,
+                    "totals": {
+                        "pct": 50.0,
+                        "tone": "warning",
+                        "covered_branches": 5,
+                        "total_branches": 10,
+                    },
+                    "endpoints": [],
+                    # `reconciled` is a string "false" — `bool("false")` is True
+                    # (a real bug if not strictly type-checked).
+                    "audit": {"reconciled": "false", "unattributed_branches": []},
+                }
+            )
+        )
+
+        with caplog.at_level(logging.WARNING):  # type: ignore[attr-defined]
+            cov = load_coverage_context_if_fresh(ndjson)
+
+        assert cov is None, (
+            "Expected None when audit.reconciled is a string 'false' — "
+            "got a CoverageContext that would suppress the audit-failed "
+            "warning. _strict_bool must reject non-bool inputs."
+        )
+        assert any(
+            "schema mismatch" in rec.message
+            for rec in caplog.records  # type: ignore[attr-defined]
+        )
+
+    def test_non_dict_uncovered_branches_flat_returns_none_context(
+        self, tmp_path: Path, caplog: object
+    ) -> None:
+        """Per Phase 5 code-review iter 5 P1 (Codex):
+        `uncovered_branches_flat` element types weren't validated. A
+        coverage.json with a string or null element (e.g.,
+        `"uncovered_branches_flat": ["bad"]`) would survive
+        _build_coverage_context, then crash later in
+        build_coverage_summary at `b.get("file", "?")`
+        (AttributeError on str).
+
+        Fix: reject non-dict elements with ValueError; caller's except
+        downgrades to None + schema-mismatch warning."""
+        import json
+        import logging
+        from datetime import UTC, datetime
+
+        from tools.dashboard.analyzer import load_coverage_context_if_fresh
+
+        ndjson = tmp_path / "frontend" / "test-results" / "cucumber.ndjson"
+        ndjson.parent.mkdir(parents=True)
+        ndjson.write_text("")
+        cov_json = tmp_path / "tests" / "bdd" / "reports" / "coverage.json"
+        cov_json.parent.mkdir(parents=True)
+        cov_ts = datetime.fromtimestamp(ndjson.stat().st_mtime, tz=UTC).isoformat()
+        cov_json.write_text(
+            json.dumps(
+                {
+                    "timestamp": cov_ts,
+                    "totals": {
+                        "pct": 75.0,
+                        "tone": "warning",
+                        "covered_branches": 15,
+                        "total_branches": 20,
+                    },
+                    "endpoints": [
+                        {
+                            "method": "GET",
+                            "path": "/api/v1/games",
+                            "pct": 80.0,
+                            "tone": "success",
+                            # Bad: string element, not a dict
+                            "uncovered_branches_flat": ["this should be a dict"],
+                        }
+                    ],
+                    "audit": {"reconciled": True, "unattributed_branches": []},
+                }
+            )
+        )
+
+        with caplog.at_level(logging.WARNING):  # type: ignore[attr-defined]
+            cov = load_coverage_context_if_fresh(ndjson)
+
+        assert cov is None, (
+            "Expected None when uncovered_branches_flat has non-dict elements — "
+            "got a CoverageContext that would crash build_coverage_summary later."
+        )
+        assert any(
+            "schema mismatch" in rec.message
+            for rec in caplog.records  # type: ignore[attr-defined]
+        )
+
+    def test_fresh_coverage_json_returns_context(self, tmp_path: Path) -> None:
+        import json
+        from datetime import UTC, datetime
+
+        from tools.dashboard.analyzer import load_coverage_context_if_fresh
+
+        ndjson = tmp_path / "frontend" / "test-results" / "cucumber.ndjson"
+        ndjson.parent.mkdir(parents=True)
+        ndjson.write_text("")
+        cov_json = tmp_path / "tests" / "bdd" / "reports" / "coverage.json"
+        cov_json.parent.mkdir(parents=True)
+        # Use the ndjson's mtime so the timestamps match within 1h.
+        cov_ts = datetime.fromtimestamp(ndjson.stat().st_mtime, tz=UTC).isoformat()
+        cov_json.write_text(
+            json.dumps(
+                {
+                    "timestamp": cov_ts,
+                    "totals": {
+                        "pct": 75.0,
+                        "tone": "warning",
+                        "covered_branches": 75,
+                        "total_branches": 100,
+                    },
+                    "endpoints": [
+                        {
+                            "method": "GET",
+                            "path": "/api/v1/games",
+                            "pct": 80.0,
+                            "tone": "warning",
+                            "uncovered_branches_flat": [],
+                        }
+                    ],
+                    "audit": {"reconciled": True, "unattributed_branches": []},
+                }
+            )
+        )
+        cov = load_coverage_context_if_fresh(ndjson)
+        assert cov is not None
+        assert cov.totals_pct == 75.0
+        assert cov.totals_covered_branches == 75
+        assert cov.totals_total_branches == 100
+        assert cov.audit_reconciled is True
+        assert cov.endpoints_summary == (("GET", "/api/v1/games", 80.0, "warning"),)
